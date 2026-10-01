@@ -33,6 +33,7 @@ python -m backend.crawler.crawl --no-detail
 | `--headless` | 브라우저 창 없이 실행 |
 | `--max-pages N` | 테스트용 최대 페이지 수 |
 | `--no-detail` | 상세 페이지 방문 생략 |
+| `--detail-limit N` | 상세를 최대 N건만 받음 (부분 실행) |
 
 결과는 `backend/data/youth.db`, 로그는 `backend/logs/crawl_YYYYMMDD.log`에 저장됩니다.
 
