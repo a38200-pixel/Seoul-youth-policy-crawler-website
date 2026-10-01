@@ -109,6 +109,10 @@ def upsert_program(conn, row, now):
     return False
 
 
+def count_rows(conn):
+    return conn.execute("SELECT COUNT(*) FROM programs").fetchone()[0]
+
+
 def count_active(conn):
     return conn.execute("SELECT COUNT(*) FROM programs WHERE is_active = 1").fetchone()[0]
 

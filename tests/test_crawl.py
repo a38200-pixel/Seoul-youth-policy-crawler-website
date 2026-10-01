@@ -216,6 +216,148 @@ def test_main_reclassify_flag_does_not_open_browser(db, monkeypatch):
     assert crawl.main(["--reclassify"]) == 2    # DB 없음 → 2, 브라우저는 열리지 않음
 
 
+def test_list_reading_summary_fields_for_full_run(db, caplog):
+    pages = {1: list_html(["1", "2"]), 2: list_html(["3"])}
+    with caplog.at_level(logging.INFO):
+        stats = run_crawl(FakeFetcher(pages), db, NOW)
+    # 3페이지(0건)에서 끝: 읽은 페이지 3개, 새 공고가 있던 마지막 페이지는 2번(1건)
+    assert (stats.pages_read, stats.last_page, stats.last_page_items) == (3, 2, 1)
+    assert stats.end_reason == "항목 0개(3페이지)"
+    assert "목록 읽기: 3페이지 읽음 / 항목이 있던 마지막 페이지 2번(1건) / 종료 사유: 항목 0개(3페이지)" in caplog.text
+    assert "목록 상태별(제외 포함 3건): 모집중 3건, 모집예정 0건, 상시 0건 | 대상 외 상태 0건" in caplog.text
+
+
+def test_end_reasons(db, monkeypatch):
+    s = run_crawl(FakeFetcher({1: list_html(["1"]), 2: list_html(["1"])}), db, NOW)
+    assert s.end_reason == "전부 중복(2페이지)"
+    s = run_crawl(FakeFetcher({1: list_html(["1"])}), db, NOW, max_pages=1)
+    assert s.end_reason == "--max-pages 1 도달(부분 실행)"
+    s = run_crawl(FakeFetcher({1: list_html(["1"]), 2: None}), db, NOW)
+    assert s.end_reason.startswith("기타: 2페이지 수신 실패")
+    monkeypatch.setattr(crawl, "MAX_PAGES_CAP", 2)
+    s = run_crawl(FakeFetcher({p: list_html([str(p * 10 + 1)]) for p in range(1, 9)}), db, NOW)
+    assert s.end_reason == "상한 2페이지 도달"
+
+
+def test_status_counts_include_off_status_and_excluded(db, caplog):
+    page = list_html(["1"], "모집중") + list_html(["2"], "상시") + list_html(["68721"], "상시") + list_html(["3"], "마감")
+    with caplog.at_level(logging.INFO):
+        stats = run_crawl(FakeFetcher({1: page}), db, NOW)
+    assert dict(stats.status_counts) == {"모집중": 1, "상시": 2, "마감": 1}
+    assert "목록 상태별(제외 포함 4건): 모집중 1건, 모집예정 0건, 상시 2건 | 대상 외 상태 1건 {'마감': 1}" in caplog.text
+
+
+def test_mismatch_message_shows_difference(db, caplog):
+    page = TOTAL_TAB.format(n=10) + list_html(["1", "2", "68721"])
+    with caplog.at_level(logging.INFO):
+        run_crawl(FakeFetcher({1: page}), db, NOW)
+    assert "(예상 − 실제 = +7건)" in caplog.text
+
+
+def test_db_rows_and_is_active_before_after_are_reported(db, caplog):
+    seed_active(db, 3)                                  # 실행 전: 3행 모두 활성
+    with caplog.at_level(logging.INFO):
+        stats = run_crawl(FakeFetcher({1: list_html(["1", "2"])}), db, NOW)
+    assert (stats.rows_before, stats.active_before) == (3, 3)
+    assert "DB 행 수: 전 3 → 후 5 (신규 2건 / 갱신 0건)" in caplog.text
+    assert "is_active: 전(활성 3 / 비활성 0) → 후(활성 2 / 비활성 3)" in caplog.text
+    assert "deactivate_unseen: 호출함 → 새로 비활성 3건" in caplog.text
+
+
+def test_ratio_check_is_reported(db, caplog):
+    seed_active(db, 20)
+    with caplog.at_level(logging.INFO):
+        run_crawl(FakeFetcher({1: list_html(["1", "2"])}), db, NOW)
+    assert "50% 검사: 수집 2건 / 직전 활성 20건 = 10% (기준 50% 이상) → 미달 → is_active 갱신 생략" in caplog.text
+    assert "deactivate_unseen: 호출 안 함" in caplog.text
+
+
+def test_ratio_check_passes_and_first_run_is_skipped(db, caplog):
+    with caplog.at_level(logging.INFO):
+        run_crawl(FakeFetcher({1: list_html(["1", "2"])}), db, NOW)                    # 첫 전체 실행
+        run_crawl(FakeFetcher({1: list_html(["1", "2"])}), db, NOW + timedelta(days=1))  # 직전 활성 2건
+    assert "50% 검사: 직전 활성 공고 없음(첫 전체 실행) → 50% 검사 생략 (수집 2건)" in caplog.text
+    assert "50% 검사: 수집 2건 / 직전 활성 2건 = 100% (기준 50% 이상) → 통과" in caplog.text
+
+
+def test_warning_collector_reports_warnings_and_errors_only(caplog):
+    collector = crawl.WarningCollector()
+    root = logging.getLogger()
+    root.addHandler(collector)
+    try:
+        with caplog.at_level(logging.DEBUG):
+            logging.getLogger("x").info("정보")
+            logging.getLogger("x").warning("경고 하나")
+            logging.getLogger("y").error("오류 하나")
+            crawl.log_warning_report(collector)
+    finally:
+        root.removeHandler(collector)
+    assert collector.records_seen == [("WARNING", "x", "경고 하나"), ("ERROR", "y", "오류 하나")]
+    assert "WARNING/ERROR 2건" in caplog.text
+    assert "[WARNING] x: 경고 하나" in caplog.text
+
+
+class SlowFetcher(FakeFetcher):
+    DELAYS = {"1": 0.01, "2": 0.06, "3": 0.03, "4": 0.09}
+
+    def fetch_detail(self, source_id):
+        import time as _t
+        _t.sleep(self.DELAYS[source_id])
+        return super().fetch_detail(source_id)
+
+
+def test_detail_timing_is_recorded_and_slowest_three_reported(db, caplog):
+    with caplog.at_level(logging.INFO):
+        stats = run_crawl(SlowFetcher({1: list_html(["1", "2", "3", "4"])}), db, NOW)
+    assert [sid for sid, _ in stats.detail_timings] == ["1", "2", "3", "4"]
+    assert all(sec >= 0.01 for _, sec in stats.detail_timings)
+    line = [m for m in caplog.messages if m.startswith("상세 요청:")][0]
+    assert "4건" in line and "건당 평균" in line
+    # 가장 느린 3건은 오래 걸린 순서: 4(0.09) → 2(0.06) → 3(0.03)
+    assert line.index("4 0.") < line.index("2 0.") < line.index("3 0.")
+    assert "1 0." not in line.split("가장 느린 3건:")[1]
+
+
+def test_detail_timing_is_zero_when_no_details_requested(db, caplog):
+    with caplog.at_level(logging.INFO):
+        stats = run_crawl(FakeFetcher({1: list_html(["1"])}), db, NOW, no_detail=True)
+    assert stats.detail_timings == []
+    assert "상세 요청: 0건" in caplog.messages
+
+
+def test_aborts_after_10_consecutive_detail_failures_and_never_deactivates(db, caplog):
+    seed_active(db, 1)                                   # 정상이라면 이 행은 목록에 없어 비활성이 될 수 있는 전체 실행
+    ids = [str(i) for i in range(1, 16)]                 # 15건 모두 상세 실패
+    fetcher = FakeFetcher({1: list_html(ids)}, fail_detail=ids)
+    with caplog.at_level(logging.INFO):
+        stats = run_crawl(fetcher, db, NOW)
+    assert crawl.MAX_CONSECUTIVE_DETAIL_FAILURES == 10
+    assert fetcher.detail_calls == ids[:10]              # 10건째에서 멈추고 11번째부터는 요청하지 않는다
+    assert stats.detail_fail == 10 and stats.detail_failed_ids == ids[:10]
+    assert stats.exit_code == crawl.EXIT_DETAIL_ABORTED != 0
+    assert stats.deactivated is None                     # deactivate_unseen 호출 금지
+    assert rows(db, "source_id = 'old0'")[0]["is_active"] == 1
+    assert "연속 10건 실패해 수집을 중단함" in caplog.text
+    assert "상세 연속 실패로 중단되어 is_active 갱신 생략" in caplog.text
+    assert "[중단]" in caplog.text
+
+
+def test_success_resets_the_consecutive_failure_counter(db):
+    ids = [str(i) for i in range(1, 21)]
+    fail = [i for i in ids if i not in ("10", "20")]     # 9건 실패 → 성공 → 9건 실패 → 성공
+    fetcher = FakeFetcher({1: list_html(ids)}, fail_detail=fail)
+    stats = run_crawl(fetcher, db, NOW)
+    assert stats.abort_reason is None and stats.exit_code == 0
+    assert len(fetcher.detail_calls) == 20               # 끝까지 요청했다
+    assert stats.detail_fail == 18 and stats.detail_ok == 2
+    assert stats.deactivated == 0                        # 정상 완료한 전체 실행이므로 호출됨
+
+
+def test_should_deactivate_refuses_when_aborted():
+    ok, note = should_deactivate(False, True, 1000, 1000, aborted=True)
+    assert ok is False and "상세 연속 실패" in note
+
+
 def test_off_status_items_are_skipped(db):
     pages = {1: list_html(["1", "2"], status="마감")}
     stats = run_crawl(FakeFetcher(pages), db, NOW)
