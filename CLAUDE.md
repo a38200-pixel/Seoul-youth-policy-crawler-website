@@ -79,16 +79,64 @@ youth-dday/ (저장소 루트)
 - 페이지 이동마다 1초 이상 대기. 재시도는 최대 2회.
 - headless 옵션은 crawl.py 실행 인자 `--headless` 로 켜고 끈다. 그 밖의 인자: `--max-pages`(테스트용), `--no-detail`.
 - normalizer: 'YYYY-MM-DD ~ YYYY-MM-DD' 패턴을 추출. 날짜를 못 찾으면 start/end는 None, 원문은 period_text에 보관.
-  `classify_period(text)` 가 (period_type, start, end) 를 반환: dated / always("상시"로 시작) / unknown(경고 로그).
+  `classify_period(text)` 가 (period_type, start, end) 를 반환: dated / end_only("~ YYYY-MM-DD" 로 시작, 시작일 없음) /
+  always("상시"로 시작) / unknown(경고 로그). 판정 순서는 dated → end_only → always → unknown. end_only 의 날짜가 유효하지 않으면 unknown.
   모든 날짜 기준 시간대는 Asia/Seoul.
 - 마지막에 수집 건수, 상세 성공/실패 건수, 소요 시간을 logs/crawl_YYYYMMDD.log 와 콘솔에 출력.
-- 이미 DB에 있고 last_seen_at 이 오늘인 공고는 상세를 다시 방문하지 않는다(재실행 시 부담 줄이기).
+- 상세를 **마지막으로 받은 시각(`detail_fetched_at`)의 날짜(Asia/Seoul)가 오늘이면** 상세를 다시 방문하지 않는다(재실행 시 부담 줄이기).
+  판정에 `last_seen_at` 을 쓰지 않는다: 목록만 본 upsert 도 last_seen_at 을 오늘로 갱신하므로, 어제 받은 상세를 오늘 받은 것으로 오인하게 된다.
+  `detail_fetched_at` 은 상세를 받은 upsert 에서만 갱신하고(목록만 본 upsert·상세 수신 실패는 그대로), NULL 이면 받은 적 없는 것으로 본다.
+  오늘 날짜는 `run_crawl(..., today=date)` 로 주입할 수 있다(테스트용).
+
+### 목록 URL 구조 (최소 파라미터)
+사용자가 주소창에서 확인한 URL 에서 지도 관련 파라미터(cntrLa, cntrLo, neLat, neLng, swLat, swLng, mapLvl, sarea, viewType)와
+`#none` 을 뺀 최소형을 `selectors.list_url(page=1, order_by="regYmd desc", per_page=24)` 로 만든다.
+```
+https://youth.seoul.go.kr/infoData/sprtInfo/list.do?key=2309130006&pageIndex=1&orderBy=regYmd+desc&recordCountPerPage=24
+  &sc_rcritCurentSitu=상시&sc_rcritCurentSitu=모집중&sc_rcritCurentSitu=모집예정   (같은 키 3회 반복, 한글은 퍼센트 인코딩)
+```
+- 최소 URL 이 전체 URL 과 같은 결과("전체 N건")를 주는지는 실행 검증 a) 에서 확인한다.
+- 제외 공고: `selectors.EXCLUDE_IDS`(초기값 68721), `EXCLUDE_TITLE_KEYWORDS`(초기값 "게시요청 가이드"). 제외 건수와 제목은 로그에 남긴다.
+- "전체 N건" 은 `.tab-st4 .tab-btn li.active a` 선택자로 읽되, **`.tab-st4` 가 두 군데(정렬 탭, 건수 탭)에 있고**
+  텍스트가 '전체 N건' 형태인 것만 쓴다. 정렬 탭의 active 링크는 "최신순"(문서 순서상 첫 번째), 건수 탭은 "전체 9254건"
+  (+ "상시지원 N건", "일반지원 N건"). 판별 정규식은 `r"전체\s*([\d,]+)건"`.
+- 실행 끝 건수 비교는 `수집 + 제외 + 대상 외 상태 = 목록에서 읽은 건수` 를 예상 건수("전체 N건")와 비교한다.
+  페이지 사이에 중복된 source_id 가 있으면 건수와 ID 를 요약에 출력한다.
+
+### crawl.py 실행 (프로젝트 루트, conda 환경 web_crawling)
+```
+python -m backend.crawler.crawl [--headless] [--max-pages N] [--no-detail] [--detail-limit N]
+```
+- `--headless` 창 없이 실행 / `--max-pages N` 목록 N페이지만(부분 실행) / `--no-detail` 상세 방문 생략 / `--detail-limit N` 상세를 최대 N건만 받음(부분 실행).
+- `--reclassify`: **사이트 접속 없이** DB 의 period_text 로 period_type/start_date/end_date 를 다시 계산한다
+  (`python -m backend.crawler.crawl --reclassify`). 바뀐 행만 갱신(updated_at 갱신, last_seen_at 은 그대로)하고, period_text 가 NULL 인
+  행(상세 미수신)은 건드리지 않는다. 실행 후 바뀐 행 수·ID(이전→이후)와 DB 전체 period_type 별 건수를 출력한다. DB 파일이 없으면
+  새로 만들지 않고 종료 코드 2. 분류 규칙을 바꾼 뒤 이미 저장된 행에 적용할 때 쓴다.
+  일반 실행에서도 목록 수집이 성공해 DB 를 연 직후(upsert 전)에 같은 재분류를 자동으로 한 번 한다(목록 0건이면 DB 를 열지 않으므로 하지 않음).
+- 로그 수준: 필수 필드(제목, 신청기간)의 "라벨 없음"/"값 비어 있음" 만 건별 WARNING. 선택 필드(대상·진행일정·담당기관)는 건별 DEBUG 로
+  내리고, 실행 요약에 "선택 필드 비어 있음(상세 받은 N건 중): 대상 N건, …" 으로 필드별 건수를 출력한다.
+- 흐름: 목록(24건/페이지, pageIndex 로 이동, 항목 0개 페이지에서 종료, 상한 300페이지) → 제외·상태 필터 → 항목마다
+  (detail_fetched_at 이 오늘이면 상세 건너뜀, 아니면 상세 수신) → make_row → upsert_program → commit.
+  목록에서 0건이면 DB 를 만들지도 열지도 않는다. 변경 감지(program_changes 기록)는 다음 단계.
+- 대기: `.category-feed` 가 나타날 때까지 WebDriverWait(60초, 상세 30초). 타임아웃이면 재시도 최대 2회 후
+  `backend/logs/timeout_*.png` 스크린샷을 저장하고 로그에 남긴다. 이동 사이 최소 1초 대기.
+- **is_active 갱신(deactivate_unseen)은 `--max-pages`/`--detail-limit` 없이 목록을 끝까지 정상으로 읽은 실행에서만** 호출한다.
+  부분 실행이면 "부분 실행이라 is_active 갱신 생략" 을 남긴다. 전체 실행이어도 수집 건수가 직전 활성 공고 수의 50% 미만이면
+  호출하지 않고 경고한다(직전 활성이 없는 첫 전체 실행은 검사 생략).
+- 목록 페이지 전체가 이미 본 공고로만 채워지면(범위 밖 pageIndex 에 마지막 페이지가 반복되는 경우) 목록 끝으로 본다.
+- 종료 코드: 0 정상(부분 실행 포함) / 1 목록 일부 실패·상한 도달로 전체 완료 못 함 / 2 목록 0건 또는 첫 페이지 실패(DB 변경 없음) / 3 예기치 못한 오류.
+- 실행 끝에 요약을 콘솔과 `backend/logs/crawl_YYYYMMDD.log` 에 출력: 목록 수집·제외 건수, 예상 건수("전체 N건") 비교
+  (부분 실행이면 비교 생략), 신규/갱신, 상세 성공/실패/건너뜀, period_type 별 건수, 분야가 빈 공고, unknown 신청기간 원문 전부, 소요 시간.
 
 ## 5. SQLite (backend/data/youth.db)
 - `programs` 테이블: id INTEGER PK, source_id TEXT UNIQUE, title, category, organization, target, summary,
   period_text, period_type TEXT, schedule_text TEXT, start_date DATE, end_date DATE, source_status, source_url,
-  apply_url, is_active INTEGER, first_seen_at DATETIME, last_seen_at DATETIME, updated_at DATETIME
-  - period_type: 'dated'(신청기간에 날짜 범위 있음) / 'always'(날짜 없이 "상시"로 시작, start/end 는 NULL) / 'unknown'(그 외, 경고 로그)
+  apply_url, is_active INTEGER, first_seen_at DATETIME, last_seen_at DATETIME, updated_at DATETIME,
+  detail_fetched_at DATETIME
+  - detail_fetched_at: 상세를 마지막으로 받은 시각(isoformat, KST). 상세를 받은 upsert 에서만 갱신, 미수신이면 NULL.
+    기존 DB 는 init_db 가 `ALTER TABLE` 로 컬럼을 추가하며 **백필하지 않는다**(기존 행은 NULL → 다음 실행에서 상세를 한 번 다시 받음).
+  - period_type: 'dated'(신청기간에 날짜 범위 있음) / 'end_only'(시작일 없이 "~ YYYY-MM-DD", start_date 는 NULL·end_date 만 채움) /
+    'always'(날짜 없이 "상시"로 시작, start/end 는 NULL) / 'unknown'(그 외, 경고 로그). 상세를 받지 않은 행은 NULL.
   - period_text: 신청기간 원문(공백 정리). 예: "상시 [ 선착순 마감 ]"
   - schedule_text: 진행일정 원문(공백 정리). 예: "2026-11-07 00:00:00 14시 0분 ~ 15시 30분"
   - start_date/end_date 는 **신청기간에서만** 만든다. 진행일정 날짜를 end_date 로 쓰지 않는다.
@@ -120,8 +168,11 @@ youth-dday/ (저장소 루트)
   - 모집예정(오늘 < start_date): 마감 D-Day 대신 **'시작 D-n'**(start_date - 오늘)으로 표시하고,
     모집중 뒤에 정렬한다(시작일 빠른 순).
 - always: **D-Day 없음, 목록 맨 뒤**에 둔다.
+- end_only: **dated 처럼 end_date 기준 D-Day**(end_date - 오늘). start_date 가 없으므로 **상태는 목록의 모집상태(source_status)를 사용**한다.
+  (사이트 원본에 시작일이 비어 있는 공고다. 예: 74531 신청기간 "~ 2026-10-08 00 : 00", 목록 상태 모집중.)
+  모집상태가 모집예정인 end_only 는 시작일을 모르므로 '시작 D-n' 을 만들 수 없다 — 표시 방식은 UI 단계에서 정한다.
 - unknown: D-Day 계산 불가, **목록 맨 뒤**에 둔다. 화면 표시는 always 와 구분해서 다룰 것(UI 단계에서 정함).
-- 정렬 순서: 모집중(dated) → 모집예정(dated) → always, unknown.
+- 정렬 순서: 모집중(dated, end_only) → 모집예정(dated) → always, unknown.
 - 진행일정(schedule_text)은 D-Day 기준으로 쓰지 않는다. 표시용 텍스트일 뿐이다.
 
 ## 6. 테스트와 확인
