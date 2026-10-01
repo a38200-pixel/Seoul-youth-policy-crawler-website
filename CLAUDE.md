@@ -97,9 +97,13 @@ youth-dday/ (저장소 루트)
   변경 감지 로직은 다음 단계에서 구현한다.
 
 ### D-Day 규칙
-- dated: D-Day = end_date - 오늘(Asia/Seoul).
+- dated: D-Day = end_date - 오늘(Asia/Seoul). 오늘 기준으로 아래 둘로 나뉜다.
+  - 모집중(start_date <= 오늘): 마감 D-Day 순으로 정렬(마감 임박이 먼저).
+  - 모집예정(오늘 < start_date): 마감 D-Day 대신 **'시작 D-n'**(start_date - 오늘)으로 표시하고,
+    모집중 뒤에 정렬한다(시작일 빠른 순).
 - always: **D-Day 없음, 목록 맨 뒤**에 둔다.
-- unknown: D-Day 계산 불가. 처리 방식은 UI 단계에서 정한다(always 와 구분해서 다룰 것).
+- unknown: D-Day 계산 불가, **목록 맨 뒤**에 둔다. 화면 표시는 always 와 구분해서 다룰 것(UI 단계에서 정함).
+- 정렬 순서: 모집중(dated) → 모집예정(dated) → always, unknown.
 - 진행일정(schedule_text)은 D-Day 기준으로 쓰지 않는다. 표시용 텍스트일 뿐이다.
 
 ## 6. 테스트와 확인
