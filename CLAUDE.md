@@ -78,18 +78,29 @@ youth-dday/ (저장소 루트)
 - 페이지 이동마다 1초 이상 대기. 재시도는 최대 2회.
 - headless 옵션은 crawl.py 실행 인자 `--headless` 로 켜고 끈다. 그 밖의 인자: `--max-pages`(테스트용), `--no-detail`.
 - normalizer: 'YYYY-MM-DD ~ YYYY-MM-DD' 패턴을 추출. 날짜를 못 찾으면 start/end는 None, 원문은 period_text에 보관.
+  `classify_period(text)` 가 (period_type, start, end) 를 반환: dated / always("상시"로 시작) / unknown(경고 로그).
   모든 날짜 기준 시간대는 Asia/Seoul.
 - 마지막에 수집 건수, 상세 성공/실패 건수, 소요 시간을 logs/crawl_YYYYMMDD.log 와 콘솔에 출력.
 - 이미 DB에 있고 last_seen_at 이 오늘인 공고는 상세를 다시 방문하지 않는다(재실행 시 부담 줄이기).
 
 ## 5. SQLite (backend/data/youth.db)
 - `programs` 테이블: id INTEGER PK, source_id TEXT UNIQUE, title, category, organization, target, summary,
-  period_text, start_date DATE, end_date DATE, source_status, source_url, apply_url, is_active INTEGER,
-  first_seen_at DATETIME, last_seen_at DATETIME, updated_at DATETIME
+  period_text, period_type TEXT, schedule_text TEXT, start_date DATE, end_date DATE, source_status, source_url,
+  apply_url, is_active INTEGER, first_seen_at DATETIME, last_seen_at DATETIME, updated_at DATETIME
+  - period_type: 'dated'(신청기간에 날짜 범위 있음) / 'always'(날짜 없이 "상시"로 시작, start/end 는 NULL) / 'unknown'(그 외, 경고 로그)
+  - period_text: 신청기간 원문(공백 정리). 예: "상시 [ 선착순 마감 ]"
+  - schedule_text: 진행일정 원문(공백 정리). 예: "2026-11-07 00:00:00 14시 0분 ~ 15시 30분"
+  - start_date/end_date 는 **신청기간에서만** 만든다. 진행일정 날짜를 end_date 로 쓰지 않는다.
 - source_id 기준 upsert. 신규면 first_seen_at 기록, 기존이면 값 갱신 + last_seen_at 갱신.
 - 이번 실행에서 보이지 않은 공고는 is_active=0 (삭제하지 않음).
 - `program_changes` 테이블(id, program_id, change_type, old_value, new_value, detected_at)은 스키마만 만들어 둔다.
   변경 감지 로직은 다음 단계에서 구현한다.
+
+### D-Day 규칙
+- dated: D-Day = end_date - 오늘(Asia/Seoul).
+- always: **D-Day 없음, 목록 맨 뒤**에 둔다.
+- unknown: D-Day 계산 불가. 처리 방식은 UI 단계에서 정한다(always 와 구분해서 다룰 것).
+- 진행일정(schedule_text)은 D-Day 기준으로 쓰지 않는다. 표시용 텍스트일 뿐이다.
 
 ## 6. 테스트와 확인
 - tests 는 samples/ 의 HTML을 파일로 읽어 파싱 함수만 검증한다(네트워크 접속 없이). pytest 로 실행.

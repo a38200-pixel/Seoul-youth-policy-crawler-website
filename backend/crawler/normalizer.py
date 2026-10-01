@@ -1,9 +1,16 @@
 """신청기간 문자열 → start_date, end_date. 날짜 기준 시간대는 Asia/Seoul."""
+import logging
 import re
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+log = logging.getLogger(__name__)
+
 KST = ZoneInfo("Asia/Seoul")
+
+PERIOD_DATED = "dated"
+PERIOD_ALWAYS = "always"
+PERIOD_UNKNOWN = "unknown"
 
 _PERIOD_RE = re.compile(r"(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})")
 
@@ -24,3 +31,20 @@ def normalize_period(text):
         return date.fromisoformat(m.group(1)), date.fromisoformat(m.group(2))
     except ValueError:
         return None, None
+
+
+def classify_period(text):
+    """신청기간 문자열을 (period_type, start, end) 로 분류한다.
+
+    - 'YYYY-MM-DD ~ YYYY-MM-DD' 가 있으면 ('dated', start, end)
+    - 날짜가 없고 "상시"로 시작하면 ('always', None, None)
+    - 그 외는 ('unknown', None, None) 이고 경고 로그를 남긴다.
+    진행일정 문자열이 아니라 신청기간 문자열만 넘길 것.
+    """
+    start, end = normalize_period(text)
+    if start is not None:
+        return PERIOD_DATED, start, end
+    if (text or "").strip().startswith("상시"):
+        return PERIOD_ALWAYS, None, None
+    log.warning("신청기간을 분류하지 못함(unknown): %r", text)
+    return PERIOD_UNKNOWN, None, None

@@ -3,9 +3,11 @@ from pathlib import Path
 import pytest
 
 from backend.crawler.detail_parser import parse_detail
-from backend.crawler.normalizer import normalize_period
+from backend.crawler.normalizer import classify_period, normalize_period
 
-SAMPLE = Path(__file__).resolve().parent.parent / "backend" / "crawler" / "samples" / "detail_sample.html"
+SAMPLES = Path(__file__).resolve().parent.parent / "backend" / "crawler" / "samples"
+SAMPLE = SAMPLES / "detail_sample.html"
+SAMPLE_ALWAYS = SAMPLES / "detail_sample_always.html"
 
 
 @pytest.fixture(scope="module")
@@ -37,6 +39,33 @@ def test_apply_url(detail):
 def test_summary_limited_to_200(detail):
     assert 0 < len(detail["summary"]) <= 200
     assert "마음 환기 산책" in detail["summary"]
+
+
+@pytest.fixture(scope="module")
+def always():
+    return parse_detail(SAMPLE_ALWAYS.read_text(encoding="utf-8"))
+
+
+def test_always_period(always):
+    assert always["period_text"] == "상시 [ 선착순 마감 ]"
+    period_type, start, end = classify_period(always["period_text"])
+    assert period_type == "always"
+    assert start is None and end is None
+
+
+def test_always_schedule_text_keeps_raw(always):
+    assert always["schedule_text"] == "2026-11-07 00:00:00 14시 0분 ~ 15시 30분"
+
+
+def test_schedule_date_is_not_used_as_end_date(always):
+    # 진행일정(2026-11-07)이 신청기간 end_date 로 새어 들어가면 안 된다
+    _, start, end = classify_period(always["period_text"])
+    assert end is None
+    assert normalize_period(always["period_text"]) == (None, None)
+
+
+def test_dated_sample_period_type(detail):
+    assert classify_period(detail["period_text"])[0] == "dated"
 
 
 def test_label_order_does_not_matter():
