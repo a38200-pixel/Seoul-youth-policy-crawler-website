@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.crawler.list_parser import parse_list
+from backend.crawler.list_parser import parse_list, parse_total_count
 
 SAMPLE = Path(__file__).resolve().parent.parent / "backend" / "crawler" / "samples" / "list_sample.html"
 
@@ -47,6 +47,17 @@ def test_all_fields_present(items):
 def test_missing_elements_do_not_crash():
     html = '<div class="category-feed"><div class="feed-item"><a class="item-overlay" onclick="goView(\'1\');"></a></div></div>'
     assert parse_list(html) == [{"source_id": "1", "category": None, "title": None, "status": None}]
+
+
+def test_total_count_skips_sort_tab():
+    # 정렬 탭(최신순)도 .tab-st4 .tab-btn li.active a 에 걸리지만 "전체 N건" 을 읽어야 한다
+    assert parse_total_count(SAMPLE.read_text(encoding="utf-8")) == 9254
+
+
+def test_total_count_with_commas_and_missing():
+    html = '<div class="tab-st4"><ul class="tab-btn"><li class="active"><a>전체 1,234건</a></li></ul></div>'
+    assert parse_total_count(html) == 1234
+    assert parse_total_count("<html></html>") is None
 
 
 def test_empty_page_returns_empty_list():

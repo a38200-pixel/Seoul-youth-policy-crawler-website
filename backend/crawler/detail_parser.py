@@ -59,10 +59,13 @@ def parse_detail(html):
     }
     for key, label in fields.items():
         result[key] = info.get(label)
+        # 필수 필드(신청기간)만 건별 WARNING. 선택 필드(대상·진행일정·담당기관)는 DEBUG 로 내리고
+        # 비어 있는 건수는 crawl.py 실행 요약에 필드별로 출력한다.
+        level = logging.WARNING if label in sel.REQUIRED_LABELS else logging.DEBUG
         if label not in info:
-            log.warning("라벨 없음: %s", label)
+            log.log(level, "라벨 없음: %s", label)
         elif result[key] is None:
-            log.warning("값 비어 있음: %s", label)
+            log.log(level, "값 비어 있음: %s", label)
 
     apply_el = soup.select_one(sel.DETAIL_APPLY)
     if apply_el is None:
