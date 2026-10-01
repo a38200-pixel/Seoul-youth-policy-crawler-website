@@ -29,7 +29,8 @@ youth-dday/ (저장소 루트)
 │   │   ├─ list_parser.py     # 목록 페이지 → 공고 기본정보
 │   │   ├─ detail_parser.py   # 상세 페이지 → 상세 필드
 │   │   ├─ normalizer.py      # 신청기간 문자열 → start_date, end_date
-│   │   ├─ db.py              # SQLite 스키마 생성, upsert
+│   │   ├─ record.py          # make_row(list_item, detail) → DB 한 행(dict)
+│   │   ├─ db.py              # init_db, upsert_program, deactivate_unseen
 │   │   └─ crawl.py           # 실행 진입점: python -m backend.crawler.crawl
 │   ├─ data/                  # youth.db 생성 위치
 │   └─ logs/                  # 실행 로그
@@ -93,6 +94,23 @@ youth-dday/ (저장소 루트)
   - start_date/end_date 는 **신청기간에서만** 만든다. 진행일정 날짜를 end_date 로 쓰지 않는다.
 - source_id 기준 upsert. 신규면 first_seen_at 기록, 기존이면 값 갱신 + last_seen_at 갱신.
 - 이번 실행에서 보이지 않은 공고는 is_active=0 (삭제하지 않음).
+- **is_active 갱신은 전체 수집이 완료됐을 때만** 한다. `--max-pages` 로 일부만 수집했거나 중간에 실패·중단된 실행에서는
+  `deactivate_unseen` 을 호출하지 않는다(안 그러면 안 본 공고가 전부 비활성이 된다). 호출 규칙은 crawl.py(4-B)에서 구현.
+  `deactivate_unseen` 은 seen_ids 가 비어 있으면 ValueError. `upsert_program` 은 본 공고를 is_active=1 로 되살린다.
+- 날짜·시각은 DB에 isoformat() 문자열로 저장한다(Python 3.12 sqlite3 기본 adapter 가 deprecated). 시각 기준은 Asia/Seoul.
+
+### record.py / db.py 역할
+- `record.make_row(list_item, detail)`: 목록 항목 + parse_detail 결과 → DB 한 행.
+  - title/category 는 상세 우선, 없으면 목록 값. source_status 는 목록의 모집상태. source_url 은 상세 URL 규칙대로 생성.
+  - period_type/start_date/end_date 는 `classify_period(detail["period_text"])` 결과로만 만든다(schedule_text 는 넘기지 않음).
+  - detail 이 None(상세를 받지 않음)이면 상세 필드와 period_type 은 None('unknown' 아님).
+- `db.init_db(path)`: programs, program_changes 생성, 연결 반환(':memory:' 가능).
+- `db.upsert_program(conn, row, now)`: source_id 기준. 신규면 True, 갱신이면 False 반환. commit 은 호출자가 한다.
+  - row 값이 None 이면 기존 값을 덮어쓰지 않는다. **예외: period_type/start_date/end_date 는 한 묶음**이라
+    period_type 이 None(상세 미수신)이면 셋 다 유지, 값이 있으면 start/end 가 None 이어도 덮어쓴다
+    (dated → always 로 바뀐 공고에 옛 end_date 가 남지 않게). 반대로 상세에서 값이 비게 된 organization 등은 비워지지 않는다.
+  - last_seen_at, updated_at 은 항상 now 로 갱신.
+- `db.deactivate_unseen(conn, seen_ids)`: seen_ids 에 없으면 is_active=0, 있으면 1. 새로 비활성이 된 행 수 반환.
 - `program_changes` 테이블(id, program_id, change_type, old_value, new_value, detected_at)은 스키마만 만들어 둔다.
   변경 감지 로직은 다음 단계에서 구현한다.
 
