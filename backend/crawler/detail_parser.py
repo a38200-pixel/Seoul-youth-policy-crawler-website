@@ -1,5 +1,6 @@
 """상세 페이지 HTML → 상세 필드."""
 import logging
+import re
 
 from bs4 import BeautifulSoup
 
@@ -9,7 +10,11 @@ log = logging.getLogger(__name__)
 
 
 def _clean(text):
-    return " ".join(text.split()) or None
+    """공백·줄바꿈을 한 칸 공백으로 정리하고, 괄호 안쪽 공백("( 가 )")은 제거한다."""
+    text = " ".join(text.split())
+    text = re.sub(r"\(\s+", "(", text)
+    text = re.sub(r"\s+\)", ")", text)
+    return text or None
 
 
 def _text(soup, css):
@@ -54,8 +59,10 @@ def parse_detail(html):
     }
     for key, label in fields.items():
         result[key] = info.get(label)
-        if result[key] is None:
+        if label not in info:
             log.warning("라벨 없음: %s", label)
+        elif result[key] is None:
+            log.warning("값 비어 있음: %s", label)
 
     apply_el = soup.select_one(sel.DETAIL_APPLY)
     if apply_el is None:

@@ -42,10 +42,6 @@ def test_classify_unknown_logs_warning(caplog):
         assert "unknown" in caplog.text
 
 
-def test_classify_dated_wins_over_always_prefix():
-    assert classify_period("상시 2026-01-01 ~ 2026-01-31")[0] == "dated"
-
-
 def test_classify_always_prefix_with_dates_returns_dates():
     assert classify_period("상시 2026-01-01 ~ 2026-01-31") == ("dated", date(2026, 1, 1), date(2026, 1, 31))
 

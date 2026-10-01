@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from backend.crawler.normalizer import classify_period, normalize_period
 SAMPLES = Path(__file__).resolve().parent.parent / "backend" / "crawler" / "samples"
 SAMPLE = SAMPLES / "detail_sample.html"
 SAMPLE_ALWAYS = SAMPLES / "detail_sample_always.html"
+SAMPLE_UPCOMING = SAMPLES / "detail_sample_upcoming.html"
 
 
 @pytest.fixture(scope="module")
@@ -66,6 +68,64 @@ def test_schedule_date_is_not_used_as_end_date(always):
 
 def test_dated_sample_period_type(detail):
     assert classify_period(detail["period_text"])[0] == "dated"
+
+
+@pytest.fixture(scope="module")
+def upcoming():
+    return parse_detail(SAMPLE_UPCOMING.read_text(encoding="utf-8"))
+
+
+# 아래 기대값은 detail_sample_upcoming.html 을 직접 읽고 정한 값이다(파서 출력 복사 아님).
+# 대상 <li> 는 HTML 에서 비어 있으므로 None.
+def test_upcoming_category_and_title(upcoming):
+    assert upcoming["category"] == "금융"
+    assert upcoming["title"] == "금융위원회 & 서민금융진흥원 <청년미래적금 2차 모집>"
+
+
+def test_upcoming_period_text_is_raw(upcoming):
+    assert upcoming["period_text"] == "2026-10-07 ~ 2026-10-16 00 : 00"
+
+
+def test_upcoming_target_empty_is_none(upcoming):
+    assert upcoming["target"] is None
+
+
+def test_upcoming_organization(upcoming):
+    # HTML 원문은 "(금융위원회 )" 이고 괄호 안쪽 공백은 정리 규칙으로 제거된다
+    assert upcoming["organization"] == "기타 (금융위원회)"
+
+
+def test_upcoming_schedule_text(upcoming):
+    assert upcoming["schedule_text"] == "2026-10-07 ~ 2026-10-16 0시 0분 ~ 0시 0분"
+
+
+def test_upcoming_classify_period(upcoming):
+    assert classify_period(upcoming["period_text"]) == ("dated", date(2026, 10, 7), date(2026, 10, 16))
+
+
+def test_warning_distinguishes_missing_label_from_empty_value(caplog):
+    html = """
+    <div class="cont"><em class="cate">금융</em><div class="tit"><strong>제목</strong></div>
+    <ul class="info">
+      <li><em>신청기간</em> 2026-01-01 ~ 2026-01-31</li>
+      <li><em>대상</em> </li>
+    </ul></div>
+    """
+    with caplog.at_level("WARNING"):
+        d = parse_detail(html)
+    # 반환값은 둘 다 None
+    assert d["target"] is None
+    assert d["organization"] is None
+    # 라벨은 있고 값이 비어 있음 / 라벨 자체가 없음 이 구분되어야 한다
+    assert "값 비어 있음: 대상" in caplog.text
+    assert "라벨 없음: 대상" not in caplog.text
+    assert "라벨 없음: 담당기관" in caplog.text
+    assert "값 비어 있음: 담당기관" not in caplog.text
+
+
+def test_parentheses_inner_spaces_removed():
+    html = '<div class="cont"><ul class="info"><li><em>담당기관</em> 기타 ( 금융위원회 )</li></ul></div>'
+    assert parse_detail(html)["organization"] == "기타 (금융위원회)"
 
 
 def test_label_order_does_not_matter():
