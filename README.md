@@ -34,6 +34,9 @@ python -m backend.crawler.crawl --no-detail
 | `--max-pages N` | 테스트용 최대 페이지 수 |
 | `--no-detail` | 상세 페이지 방문 생략 |
 | `--detail-limit N` | 상세를 최대 N건만 받음 (부분 실행) |
+| `--daily` | 일일 수집: 목록 전체를 읽고 정책 대상(신규·상시 외·상태 변경·오래된 상시)만 상세를 받음 |
+| `--daily-plan` | 사이트 접속 없이 DB 만 읽기 전용으로 읽어 `--daily` 의 대상 건수를 출력 |
+| `--reclassify` | 사이트 접속 없이 DB 의 신청기간 분류를 다시 계산 |
 
 결과는 `backend/data/youth.db`, 로그는 `backend/logs/crawl_YYYYMMDD.log`에 저장됩니다.
 

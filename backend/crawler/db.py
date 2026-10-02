@@ -239,6 +239,9 @@ def _to_seoul_date(value):
     return dt.date()
 
 
+to_seoul_date = _to_seoul_date   # 다른 모듈(crawl.py)에서 쓰는 공개 이름
+
+
 def is_new(first_seen_at, today=None, window_days=7):
     """NEW 판정(순수 함수, 날짜 부분만 비교한다 — 시각은 보지 않는다).
 

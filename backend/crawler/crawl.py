@@ -1,6 +1,8 @@
-"""실행 진입점: python -m backend.crawler.crawl [--headless] [--max-pages N] [--no-detail] [--detail-limit N] [--reclassify]"""
+"""실행 진입점: python -m backend.crawler.crawl [--headless] [--max-pages N] [--no-detail] [--detail-limit N]
+[--reclassify] [--daily] [--daily-plan]"""
 import argparse
 import logging
+import sqlite3
 import sys
 import time
 from collections import Counter
@@ -16,7 +18,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from . import selectors as sel
 from .browser import make_driver
 from .db import (count_active, count_rows, deactivate_unseen, detail_received_today, fetch_all, init_db,
-                 reclassify_periods, upsert_program)
+                 reclassify_periods, to_seoul_date, upsert_program)
 from .detail_parser import parse_detail
 from .list_parser import parse_list, parse_total_count
 from .normalizer import KST
@@ -37,6 +39,13 @@ MAX_RETRIES = 2
 MIN_ACTIVE_RATIO = 0.5  # 직전 활성 공고 수 대비 이 비율 미만이면 is_active 갱신 생략
 MAX_CONSECUTIVE_DETAIL_FAILURES = 10  # 상세 요청이 연속으로 이만큼 실패하면 수집을 중단한다(서버 장애·차단 대비)
 EXIT_DETAIL_ABORTED = 4
+
+# --daily 정책
+DAILY_ALWAYS_REFRESH_DAYS = 7   # always 행은 상세를 받은 지 이만큼(일) 이상 지나면 갱신 대상
+DAILY_ALWAYS_CAP = 200          # 상시 갱신은 한 번의 실행에 최대 이만큼(오래된 순). 한꺼번에 몰리는 것을 막는 상한
+DAILY_REGULAR_TYPES = ("dated", "end_only", "open", "unknown")   # 상시 외: 매 실행 대상
+DAILY_REASONS = ("new", "regular", "status", "always")           # 중복 제거 우선순위(앞이 우선)
+DAILY_LABELS = {"new": "신규", "regular": "상시 외 매일", "status": "상태 변경", "always": "상시 갱신"}
 
 
 # ---------------------------------------------------------------- 브라우저 I/O
@@ -99,6 +108,10 @@ class Stats:
     detail_fail: int = 0
     detail_skipped_today: int = 0      # 오늘 이미 받음
     detail_skipped_option: int = 0     # --no-detail / --detail-limit 로 안 받음
+    detail_skipped_policy: int = 0     # --daily 정책 대상이 아니라서 안 받음
+    daily: bool = False
+    daily_counts: Counter = field(default_factory=Counter)  # --daily 대상 구분별 건수(중복 제거 후)
+    daily_always_candidates: int = 0   # 상시 갱신 후보 수(상한 적용 전)
     detail_timings: list = field(default_factory=list)  # [(source_id, 초)] 상세 요청 1건당 소요(이동 사이 대기 포함, 실패 포함)
     detail_failed_ids: list = field(default_factory=list)  # 상세 수신·파싱에 실패한 source_id
     abort_reason: str = None           # 상세 연속 실패로 중단했다면 그 사유
@@ -194,13 +207,101 @@ def describe_ratio_check(collected, prev_active):
             f"(기준 {MIN_ACTIVE_RATIO:.0%} 이상) → {verdict}")
 
 
-def run_crawl(fetcher, db_path, now, max_pages=None, no_detail=False, detail_limit=None, today=None):
+def _seoul_datetime(value):
+    dt = datetime.fromisoformat(value)
+    return dt.replace(tzinfo=KST) if dt.tzinfo is None else dt.astimezone(KST)
+
+
+def plan_daily_targets(universe, rows_by_id, today, list_statuses=None):
+    """--daily 의 상세 대상을 정한다. 순수 함수(DB·네트워크 없음).
+
+    대상(중복 제거: 아래 (a)→(b)→(c)→(d) 순서로 처음 해당하는 구분 하나로만 센다):
+      (a) new     신규: DB 에 없거나 detail_fetched_at 이 NULL
+      (b) regular 상시 외 매일: period_type 이 dated / end_only / open / unknown
+      (c) status  이번 실행의 목록 상태가 DB 의 source_status 와 다름(period_type 과 무관)
+      (d) always  always 행 중 detail_fetched_at 이 DAILY_ALWAYS_REFRESH_DAYS 일 이상 지난 것.
+                  오래된 순으로 최대 DAILY_ALWAYS_CAP 건.
+    universe: 후보 source_id 들. rows_by_id: source_id → (is_active, period_type, detail_fetched_at, source_status).
+    list_statuses: 이번 실행 목록의 {source_id: 모집상태}. None 이면 (c)는 판정하지 않는다(--daily-plan).
+    반환: ({source_id: 'new'|'regular'|'status'|'always'}, 상시 갱신 후보 수(상한 적용 전))
+    """
+    reasons, always_candidates = {}, []
+    for sid in universe:
+        row = rows_by_id.get(sid)
+        if row is None or row["detail_fetched_at"] is None:
+            reasons[sid] = "new"
+        elif row["period_type"] in DAILY_REGULAR_TYPES:
+            reasons[sid] = "regular"
+        elif (list_statuses is not None and row["source_status"] is not None
+              and list_statuses.get(sid) is not None and list_statuses[sid] != row["source_status"]):
+            reasons[sid] = "status"
+        elif row["period_type"] == "always":
+            fetched = _seoul_datetime(row["detail_fetched_at"])
+            if (today - fetched.date()).days >= DAILY_ALWAYS_REFRESH_DAYS:
+                always_candidates.append((fetched, sid))
+    always_candidates.sort()   # 오래된 순(같으면 source_id 순)
+    for _, sid in always_candidates[:DAILY_ALWAYS_CAP]:
+        reasons[sid] = "always"
+    return reasons, len(always_candidates)
+
+
+DAILY_PLAN_COLUMNS = "source_id, is_active, period_type, detail_fetched_at, source_status"
+
+
+def build_daily_plan(rows_by_id, today):
+    """저장된 DB 행만으로 (a)(b)(d) 대상을 계산한다((c)는 목록을 읽어야 알 수 있다). 활성 행(is_active=1)만 대상이다."""
+    active_ids = [sid for sid, r in rows_by_id.items() if r["is_active"] == 1]
+    reasons, candidates = plan_daily_targets(active_ids, rows_by_id, today)
+    counts = Counter(reasons.values())
+    regular_by_type = Counter(rows_by_id[s]["period_type"] for s, why in reasons.items() if why == "regular")
+    already_today = sum(1 for s in reasons
+                        if rows_by_id.get(s) is not None and rows_by_id[s]["detail_fetched_at"]
+                        and to_seoul_date(rows_by_id[s]["detail_fetched_at"]) == today)
+    return {"today": today, "active": len(active_ids), "reasons": reasons, "counts": counts,
+            "regular_by_type": regular_by_type, "always_candidates": candidates,
+            "always_selected": counts.get("always", 0), "already_today": already_today}
+
+
+def run_daily_plan(db_path, now):
+    """--daily-plan: 사이트 요청 없이 저장된 DB 만 **읽기 전용**으로 열어 대상 건수를 출력하고 끝낸다. 종료 코드를 반환한다."""
+    path = Path(db_path)
+    if not path.exists():
+        log.error("DB 가 없어 계획을 만들 수 없다: %s", db_path)
+        return 2
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)   # 읽기 전용: 쓰기를 시도해도 실패한다
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = {r["source_id"]: r for r in conn.execute(f"SELECT {DAILY_PLAN_COLUMNS} FROM programs")}
+    except sqlite3.OperationalError as e:
+        log.error("DB 스키마가 오래되어 계획을 만들 수 없다(%s). 일반 실행이나 --reclassify 로 마이그레이션이 필요하다.", e)
+        return 2
+    finally:
+        conn.close()
+    today = now.astimezone(KST).date() if now.tzinfo else now.date()
+    plan = build_daily_plan(rows, today)
+    c = plan["counts"]
+    total = sum(c.values())
+    log.info("일일 수집 계획(--daily-plan, 오프라인·DB 읽기 전용) 기준일 %s | 활성 행 %d건", today, plan["active"])
+    log.info("(a) 신규(활성, detail_fetched_at NULL): %d건", c.get("new", 0))
+    log.info("(b) 상시 외 매일(dated/end_only/open/unknown): %d건 %s", c.get("regular", 0), dict(plan["regular_by_type"]))
+    log.info("(c) 상태 변경: 실행 시 결정(목록을 읽어야 알 수 있음)")
+    log.info("(d) 상시 갱신(always, 상세 %d일 이상 경과): 후보 %d건 → 상한 %d건 적용 %d건",
+             DAILY_ALWAYS_REFRESH_DAYS, plan["always_candidates"], DAILY_ALWAYS_CAP, plan["always_selected"])
+    log.info("대상 합계(상태 변경 제외, 중복 제거): %d건", total)
+    log.info("  오늘 이미 상세를 받아 건너뛸 행: %d건 → 지금 --daily 를 돌리면 실제 상세 요청 예상: %d건 (+ 상태 변경 행)",
+             plan["already_today"], total - plan["already_today"])
+    return 0
+
+
+def run_crawl(fetcher, db_path, now, max_pages=None, no_detail=False, detail_limit=None, today=None, daily=False):
     """수집 전체 흐름. 실행 결과(Stats)를 반환하고 stats.exit_code 가 종료 코드다.
 
     today: 상세 건너뛰기 판정에 쓰는 '오늘'(date, Asia/Seoul). 생략하면 now 의 날짜. 테스트에서 주입할 수 있다.
+    daily: 일일 정책(--daily). 목록 전체를 읽은 뒤 plan_daily_targets 가 정한 행만 상세를 받는다.
+           --max-pages/--detail-limit 을 함께 쓰면 부분 실행으로 취급한다(deactivate_unseen 호출 안 함).
     """
     started = time.monotonic()
-    stats = Stats(partial_run=max_pages is not None or detail_limit is not None, run_ts=now.isoformat())
+    stats = Stats(partial_run=max_pages is not None or detail_limit is not None, run_ts=now.isoformat(), daily=daily)
 
     raw = collect_list(fetcher, max_pages, stats)
     stats.raw_count = len(raw)
@@ -236,6 +337,13 @@ def run_crawl(fetcher, db_path, now, max_pages=None, no_detail=False, detail_lim
         stats.ratio_note = describe_ratio_check(len(targets), prev_active)
         if today is None:
             today = now.astimezone(KST).date() if now.tzinfo else now.date()
+        daily_reasons = None
+        if daily:
+            # 대상 판정은 이번 실행의 upsert 전에: DB 의 이전 값과 이번 목록의 상태를 비교해야 하므로
+            existing = {r["source_id"]: r for r in conn.execute(f"SELECT {DAILY_PLAN_COLUMNS} FROM programs")}
+            daily_reasons, stats.daily_always_candidates = plan_daily_targets(
+                [i["source_id"] for i in targets], existing, today, {i["source_id"]: i["status"] for i in targets})
+            stats.daily_counts = Counter(daily_reasons.values())
         fetched = 0
         consecutive_failures = 0
         for item in targets:
@@ -243,6 +351,8 @@ def run_crawl(fetcher, db_path, now, max_pages=None, no_detail=False, detail_lim
             detail = None
             if no_detail:
                 stats.detail_skipped_option += 1
+            elif daily_reasons is not None and sid not in daily_reasons:
+                stats.detail_skipped_policy += 1
             elif detail_received_today(conn, sid, today):
                 stats.detail_skipped_today += 1
             elif detail_limit is not None and fetched >= detail_limit:
@@ -392,6 +502,12 @@ def log_summary(conn, stats, seen_ids):
     if stats.abort_reason:
         out.append(f"[중단] {stats.abort_reason}")
     out.append(format_detail_timing(stats.detail_timings))
+    if stats.daily:
+        dc = stats.daily_counts
+        out.append("일일 정책(--daily): " + " / ".join(f"{DAILY_LABELS[k]} {dc.get(k, 0)}건" for k in DAILY_REASONS) +
+                   f" → 대상 합계 {sum(dc.values())}건 (상시 갱신 후보 {stats.daily_always_candidates}건 중 상한 "
+                   f"{DAILY_ALWAYS_CAP}건 적용) | 오늘 이미 받아 건너뜀 {stats.detail_skipped_today}건 | "
+                   f"정책상 제외 {stats.detail_skipped_policy}건 | 실제 상세 요청 {len(stats.detail_timings)}건")
     out.append("period_type: " + format_period_counts(rows))
     out.append(f"선택 필드 비어 있음(상세 받은 {len(with_detail)}건 중): " +
                ", ".join(f"{k} {v}건" for k, v in optional_empty.items()))
@@ -423,7 +539,15 @@ def parse_args(argv=None):
     p.add_argument("--detail-limit", type=int, default=None, help="상세를 받을 최대 건수(부분 실행)")
     p.add_argument("--reclassify", action="store_true",
                    help="사이트 접속 없이 DB 의 period_text 로 period_type/start/end 를 다시 계산")
+    p.add_argument("--daily", action="store_true",
+                   help="일일 수집: 목록 전체를 읽고 정책 대상(신규·상시 외·상태 변경·오래된 상시)만 상세를 받음")
+    p.add_argument("--daily-plan", action="store_true",
+                   help="사이트 접속 없이 저장된 DB 만 읽기 전용으로 읽어 --daily 의 (a)(b)(d) 대상 건수를 출력")
     args = p.parse_args(argv)
+    if args.daily and (args.reclassify or args.no_detail):
+        p.error("--daily 는 --reclassify, --no-detail 과 함께 쓸 수 없다")
+    if args.daily_plan and (args.daily or args.reclassify):
+        p.error("--daily-plan 은 --daily, --reclassify 와 함께 쓸 수 없다")
     if args.max_pages is not None and args.max_pages < 1:
         p.error("--max-pages 는 1 이상이어야 한다")
     if args.detail_limit is not None and args.detail_limit < 0:
@@ -468,13 +592,15 @@ def main(argv=None):
     log.info("시작: %s", vars(args))
     if args.reclassify:
         return run_reclassify(DB_PATH, now)
+    if args.daily_plan:
+        return run_daily_plan(DB_PATH, now)
     collector = WarningCollector()
     logging.getLogger().addHandler(collector)
     driver = make_driver(args.headless)
     exit_code = 3
     try:
         stats = run_crawl(SeleniumFetcher(driver), DB_PATH, now, max_pages=args.max_pages,
-                          no_detail=args.no_detail, detail_limit=args.detail_limit)
+                          no_detail=args.no_detail, detail_limit=args.detail_limit, daily=args.daily)
         exit_code = stats.exit_code
     except Exception:
         log.exception("치명적 오류")
