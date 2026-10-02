@@ -128,7 +128,7 @@ python -m backend.crawler.crawl [--headless] [--max-pages N] [--no-detail] [--de
   내리고, 실행 요약에 "선택 필드 비어 있음(상세 받은 N건 중): 대상 N건, …" 으로 필드별 건수를 출력한다.
 - 흐름: 목록(24건/페이지, pageIndex 로 이동, 항목 0개 페이지에서 종료, 상한 300페이지) → 제외·상태 필터 → 항목마다
   (detail_fetched_at 이 오늘이면 상세 건너뜀, 아니면 상세 수신) → make_row → upsert_program → commit.
-  목록에서 0건이면 DB 를 만들지도 열지도 않는다. 변경 감지(program_changes 기록)는 다음 단계.
+  목록에서 0건이면 DB 를 만들지도 열지도 않는다. 변경 이벤트(program_changes)는 upsert 와 같은 트랜잭션에서 기록한다(아래 "변경 감지").
 - 대기: `.category-feed` 가 나타날 때까지 WebDriverWait(60초, 상세 30초). 타임아웃이면 재시도 최대 2회 후
   `backend/logs/timeout_*.png` 스크린샷을 저장하고 로그에 남긴다. 이동 사이 최소 1초 대기.
 - **is_active 갱신(deactivate_unseen)은 `--max-pages`/`--detail-limit` 없이 목록을 끝까지 정상으로 읽은 실행에서만** 호출한다.
@@ -170,15 +170,45 @@ python -m backend.crawler.crawl [--headless] [--max-pages N] [--no-detail] [--de
   - title/category 는 상세 우선, 없으면 목록 값. source_status 는 목록의 모집상태. source_url 은 상세 URL 규칙대로 생성.
   - period_type/start_date/end_date 는 `classify_period(detail["period_text"])` 결과로만 만든다(schedule_text 는 넘기지 않음).
   - detail 이 None(상세를 받지 않음)이면 상세 필드와 period_type 은 None('unknown' 아님).
-- `db.init_db(path)`: programs, program_changes 생성, 연결 반환(':memory:' 가능).
+- `db.init_db(path)`: programs, program_changes 생성(옛 program_changes 는 마이그레이션), 연결 반환(':memory:' 가능).
 - `db.upsert_program(conn, row, now)`: source_id 기준. 신규면 True, 갱신이면 False 반환. commit 은 호출자가 한다.
   - row 값이 None 이면 기존 값을 덮어쓰지 않는다. **예외: period_type/start_date/end_date 는 한 묶음**이라
     period_type 이 None(상세 미수신)이면 셋 다 유지, 값이 있으면 start/end 가 None 이어도 덮어쓴다
     (dated → always 로 바뀐 공고에 옛 end_date 가 남지 않게). 반대로 상세에서 값이 비게 된 organization 등은 비워지지 않는다.
   - last_seen_at, updated_at 은 항상 now 로 갱신.
 - `db.deactivate_unseen(conn, seen_ids)`: seen_ids 에 없으면 is_active=0, 있으면 1. 새로 비활성이 된 행 수 반환.
-- `program_changes` 테이블(id, program_id, change_type, old_value, new_value, detected_at)은 스키마만 만들어 둔다.
-  변경 감지 로직은 다음 단계에서 구현한다.
+### 변경 감지: program_changes 이벤트
+`program_changes(id, source_id, change_type, old_value, new_value, reason, detected_at)` — detected_at 은 Asia/Seoul(isoformat, +09:00).
+이벤트 종류(`db.CHANGE_*`):
+- `extended`: dated/end_only 의 end_date 가 이전 값보다 **늦어짐**(old/new = end_date).
+- `shortened`: dated/end_only 의 end_date 가 이전 값보다 **이르러짐**(old/new = end_date). extended 와 대칭이다.
+  이전·새 end_date 가 모두 있을 때만 기록한다(open → dated 처럼 이전 마감일이 없던 경우, dated → open 처럼 새 마감일이 없어진 경우는
+  extended/shortened 가 아니라 period_changed 몫).
+- `period_changed`: start_date 가 바뀌거나 period_type 이 바뀜(예: open → dated = 마감일 확정). old/new 는 JSON
+  `{"period_type","start_date","end_date"}`. **end_date 만 늦어지거나 이르러진 경우는 extended/shortened 하나만** 기록한다(중복 금지).
+  start/type 도 함께 바뀌면 extended(또는 shortened)와 period_changed 가 각각 한 건씩 생긴다.
+- `status_changed`: 목록의 모집상태(source_status) 변경(예: 모집예정 → 모집중). 둘 다 값이 있을 때만.
+- `deactivated`: is_active 1 → 0(old '1', new '0'). reason: `expired`(end_date 가 있고 end_date < 오늘(서울 날짜)) /
+  `early`(그 외 — 마감일 전·당일, 마감일 없음(open), 상시 포함).
+- `reactivated`: is_active 0 → 1(old '0', new '1').
+- **NEW 는 이벤트 행으로 만들지 않는다.** `db.is_new(first_seen_at, today=None, window_days=7)` 로 파생한다(날짜 부분만 비교하는 순수 함수):
+  first_seen_at 의 날짜가 `db.BASELINE_DATE`(2026-10-01, 기준일은 db.py 한 곳에만 정의)보다 **뒤(>)** 이고,
+  오늘(서울 날짜)과의 날짜 차이가 window_days(기본 7일) **이내(<=)** 일 때 True. 정확히 7일 차이는 True, 8일 차이는 False.
+  **기준일에 처음 본 행(2026-10-01)은 최초 적재분이라 NEW 가 아니다**(`>=` 가 아니라 `>`). 시각은 보지 않는다.
+  문자열의 offset 이 +09:00 이 아니면 서울 날짜로 환산해서 비교한다.
+
+원칙:
+- 이벤트는 해당 행의 upsert(`upsert_program`)·비활성화(`deactivate_unseen`)와 **같은 트랜잭션**에서 이전 행과 새 값을 비교해 만든다
+  (commit 은 호출자). **같은 값으로 재실행하면 이벤트가 생기지 않는다(멱등)** — 이미 비활성인 행은 다시 deactivated 가 되지 않는다.
+- `--reclassify`(분류 규칙 변경에 따른 오프라인 재분류)는 **이벤트를 만들지 않는다**. 일반 실행 시작의 자동 재분류도 같다.
+- 목록만 받는 실행(`--no-detail`, `--detail-limit` 초과분, 상세 건너뜀)은 상세가 없어 period 계열(extended/period_changed)을 만들지 않는다.
+  status_changed / deactivated / reactivated 만 가능하다.
+- 상세 값이 None 인 경우(수신 실패·미수신)는 변경으로 보지 않는다. 이전 period_type 이 NULL 인 행이 처음 상세를 받는 것도 변경이 아니다.
+- 부분 실행(`--max-pages`, `--detail-limit`)과 중단(연속 실패 등)에서는 deactivate_unseen 이 호출되지 않으므로 deactivated 가 생기지 않는다.
+- 실행 요약에 "변경 이벤트(이번 실행): 종류별 건수" 가 출력된다(detected_at == 이번 실행 시각).
+
+옛 스키마(program_id 기반, reason 없음) DB 의 마이그레이션(`init_db` 가 자동 수행): 이미 새 스키마면 변경 없음 / **비어 있으면 DROP 후 재생성** /
+행이 있으면 새 테이블로 복사(program_id → programs 에서 source_id 조회, 없으면 'id:<program_id>', reason NULL)한 뒤 원본 삭제.
 
 ### D-Day 규칙
 - dated: D-Day = end_date - 오늘(Asia/Seoul). 오늘 기준으로 아래 둘로 나뉜다.

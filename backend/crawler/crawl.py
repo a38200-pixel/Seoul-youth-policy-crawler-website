@@ -102,6 +102,7 @@ class Stats:
     detail_timings: list = field(default_factory=list)  # [(source_id, 초)] 상세 요청 1건당 소요(이동 사이 대기 포함, 실패 포함)
     detail_failed_ids: list = field(default_factory=list)  # 상세 수신·파싱에 실패한 source_id
     abort_reason: str = None           # 상세 연속 실패로 중단했다면 그 사유
+    run_ts: str = None                 # 이번 실행의 기준 시각(isoformat) — program_changes.detected_at 과 같은 값
     duplicate_ids: list = field(default_factory=list)  # 페이지 사이에 중복으로 나온 source_id
     pages_read: int = 0                # 성공적으로 받은 목록 페이지 수(종료를 알린 0건 페이지 포함)
     last_page: int = 0                 # 새 공고가 있던 마지막 페이지 번호
@@ -199,7 +200,7 @@ def run_crawl(fetcher, db_path, now, max_pages=None, no_detail=False, detail_lim
     today: 상세 건너뛰기 판정에 쓰는 '오늘'(date, Asia/Seoul). 생략하면 now 의 날짜. 테스트에서 주입할 수 있다.
     """
     started = time.monotonic()
-    stats = Stats(partial_run=max_pages is not None or detail_limit is not None)
+    stats = Stats(partial_run=max_pages is not None or detail_limit is not None, run_ts=now.isoformat())
 
     raw = collect_list(fetcher, max_pages, stats)
     stats.raw_count = len(raw)
@@ -281,7 +282,7 @@ def run_crawl(fetcher, db_path, now, max_pages=None, no_detail=False, detail_lim
         do_it, note = should_deactivate(stats.partial_run, complete, len(seen_ids), prev_active,
                                         aborted=stats.abort_reason is not None)
         if do_it:
-            stats.deactivated = deactivate_unseen(conn, seen_ids)
+            stats.deactivated = deactivate_unseen(conn, seen_ids, now)
             conn.commit()
         else:
             stats.deactivate_note = note
@@ -404,6 +405,10 @@ def log_summary(conn, stats, seen_ids):
         out.append(f"deactivate_unseen: 호출함 → 새로 비활성 {stats.deactivated}건")
     else:
         out.append(f"deactivate_unseen: 호출 안 함 ({stats.deactivate_note})")
+    events = Counter(r[0] for r in conn.execute(
+        "SELECT change_type FROM program_changes WHERE detected_at = ?", (stats.run_ts,)))
+    out.append("변경 이벤트(이번 실행): " + (
+        ", ".join(f"{k} {v}건" for k, v in sorted(events.items())) if events else "없음"))
     out.append(f"소요 시간: {stats.elapsed:.1f}초")
     for line in out:
         log.info(line)
