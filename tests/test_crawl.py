@@ -113,7 +113,7 @@ def test_summary_contains_required_items(db, caplog):
     with caplog.at_level(logging.INFO):
         run_crawl(FakeFetcher({1: list_html(["1", "2"])}), db, NOW)
     for text in ("실행 요약", "신규 2건", "상세: 성공 2",
-                 "period_type: dated=2, end_only=0, always=0, unknown=0, 미수신=0",
+                 "period_type: dated=2, end_only=0, open=0, always=0, unknown=0, 미수신=0",
                  # detail_sample.html 은 대상·진행일정·담당기관이 모두 채워져 있다
                  "선택 필드 비어 있음(상세 받은 2건 중): 대상 0건, 진행일정 0건, 담당기관 0건",
                  "분야 비어 있음: 0건", "unknown 신청기간 원문: 0건", "소요 시간"):
@@ -162,7 +162,7 @@ def test_summary_counts_empty_optional_fields_per_field(db, caplog):
     with caplog.at_level(logging.INFO):
         run_crawl(FakeFetcher({1: list_html(["1", "2", "3"])}, detail_html=END_ONLY_DETAIL), db, NOW)
     assert "선택 필드 비어 있음(상세 받은 3건 중): 대상 3건, 진행일정 0건, 담당기관 0건" in caplog.text
-    assert "period_type: dated=0, end_only=3, always=0, unknown=0, 미수신=0" in caplog.text
+    assert "period_type: dated=0, end_only=3, open=0, always=0, unknown=0, 미수신=0" in caplog.text
     assert not [r for r in caplog.records if "값 비어 있음" in r.getMessage()]
 
 
@@ -205,7 +205,7 @@ def test_reclassify_mode_updates_db_and_reports(db, caplog):
         assert crawl.run_reclassify(db, NOW) == 0
     assert "재분류: 바뀐 행 1건" in caplog.text
     assert "a: ('unknown', None, None) → ('end_only', None, '2026-10-08')" in caplog.text
-    assert "dated=0, end_only=1, always=0, unknown=0, 미수신=1" in caplog.text
+    assert "dated=0, end_only=1, open=0, always=0, unknown=0, 미수신=1" in caplog.text
     assert rows(db, "source_id = 'b'")[0]["period_type"] is None
 
 
@@ -298,7 +298,8 @@ def test_warning_collector_reports_warnings_and_errors_only(caplog):
 
 
 class SlowFetcher(FakeFetcher):
-    DELAYS = {"1": 0.01, "2": 0.06, "3": 0.03, "4": 0.09}
+    # Windows 의 시계 해상도(약 15ms)보다 충분히 큰 간격을 둔다
+    DELAYS = {"1": 0.02, "2": 0.20, "3": 0.10, "4": 0.30}
 
     def fetch_detail(self, source_id):
         import time as _t
@@ -306,16 +307,24 @@ class SlowFetcher(FakeFetcher):
         return super().fetch_detail(source_id)
 
 
-def test_detail_timing_is_recorded_and_slowest_three_reported(db, caplog):
+def test_detail_timing_is_recorded_and_slowest_five_reported(db, caplog):
     with caplog.at_level(logging.INFO):
         stats = run_crawl(SlowFetcher({1: list_html(["1", "2", "3", "4"])}), db, NOW)
     assert [sid for sid, _ in stats.detail_timings] == ["1", "2", "3", "4"]
-    assert all(sec >= 0.01 for _, sec in stats.detail_timings)
+    assert all(sec >= 0 for _, sec in stats.detail_timings)   # 하한은 시계 해상도에 좌우되므로 0 이상만 본다
     line = [m for m in caplog.messages if m.startswith("상세 요청:")][0]
     assert "4건" in line and "건당 평균" in line
-    # 가장 느린 3건은 오래 걸린 순서: 4(0.09) → 2(0.06) → 3(0.03)
-    assert line.index("4 0.") < line.index("2 0.") < line.index("3 0.")
-    assert "1 0." not in line.split("가장 느린 3건:")[1]
+    # 요청이 5건 미만이면 있는 만큼만 표시하고 오래 걸린 순서: 4(0.30) → 2(0.20) → 3(0.10) → 1(0.02)
+    assert "가장 느린 4건:" in line
+    assert line.index("4 0.") < line.index("2 0.") < line.index("3 0.") < line.index("1 0.")
+
+
+def test_format_detail_timing_keeps_only_the_slowest_five():
+    timings = [(str(i), i / 10) for i in range(1, 9)]          # 0.1 ~ 0.8초
+    line = crawl.format_detail_timing(timings)
+    assert "가장 느린 5건:" in line
+    assert line.index("8 0.80") < line.index("7 0.70") < line.index("6 0.60") < line.index("5 0.50") < line.index("4 0.40")
+    assert "3 0.30" not in line and "1 0.10" not in line
 
 
 def test_detail_timing_is_zero_when_no_details_requested(db, caplog):

@@ -80,7 +80,12 @@ youth-dday/ (저장소 루트)
 - headless 옵션은 crawl.py 실행 인자 `--headless` 로 켜고 끈다. 그 밖의 인자: `--max-pages`(테스트용), `--no-detail`.
 - normalizer: 'YYYY-MM-DD ~ YYYY-MM-DD' 패턴을 추출. 날짜를 못 찾으면 start/end는 None, 원문은 period_text에 보관.
   `classify_period(text)` 가 (period_type, start, end) 를 반환: dated / end_only("~ YYYY-MM-DD" 로 시작, 시작일 없음) /
-  always("상시"로 시작) / unknown(경고 로그). 판정 순서는 dated → end_only → always → unknown. end_only 의 날짜가 유효하지 않으면 unknown.
+  open(마감일 미정) / always("상시"로 시작) / unknown(경고 로그). 판정 순서는 dated → end_only → open → always → unknown.
+  end_only 의 날짜가 유효하지 않으면 unknown.
+  - open: 마감일 없이 시작일만 있는 형태 "YYYY-MM-DD ~ (날짜 아님)" → (open, start, None),
+    날짜가 전혀 없고 "~" 바로 뒤에 시각이 오는 형태 "~ 00 : 00 [ 선착순 마감 ]" → (open, None, None). 시작일이 유효하지 않으면 unknown.
+    "~" 만 있거나 "~ 추후 공지"·빈 문자열 같은 해석 불가 문자열은 계속 unknown + WARNING.
+  - 진행일정(schedule_text)은 어떤 유형에서도 마감일로 쓰지 않는다.
   모든 날짜 기준 시간대는 Asia/Seoul.
 - 마지막에 수집 건수, 상세 성공/실패 건수, 소요 시간을 logs/crawl_YYYYMMDD.log 와 콘솔에 출력.
 - 상세를 **마지막으로 받은 시각(`detail_fetched_at`)의 날짜(Asia/Seoul)가 오늘이면** 상세를 다시 방문하지 않는다(재실행 시 부담 줄이기).
@@ -148,7 +153,8 @@ python -m backend.crawler.crawl [--headless] [--max-pages N] [--no-detail] [--de
   - detail_fetched_at: 상세를 마지막으로 받은 시각(isoformat, KST). 상세를 받은 upsert 에서만 갱신, 미수신이면 NULL.
     기존 DB 는 init_db 가 `ALTER TABLE` 로 컬럼을 추가하며 **백필하지 않는다**(기존 행은 NULL → 다음 실행에서 상세를 한 번 다시 받음).
   - period_type: 'dated'(신청기간에 날짜 범위 있음) / 'end_only'(시작일 없이 "~ YYYY-MM-DD", start_date 는 NULL·end_date 만 채움) /
-    'always'(날짜 없이 "상시"로 시작, start/end 는 NULL) / 'unknown'(그 외, 경고 로그). 상세를 받지 않은 행은 NULL.
+    'open'(마감일 미정: end_date 는 NULL, start_date 는 있으면 채움) /
+    'always'(날짜 없이 "상시"로 시작, start/end 는 NULL) / 'unknown'(해석 불가, 경고 로그). 상세를 받지 않은 행은 NULL.
   - period_text: 신청기간 원문(공백 정리). 예: "상시 [ 선착순 마감 ]"
   - schedule_text: 진행일정 원문(공백 정리). 예: "2026-11-07 00:00:00 14시 0분 ~ 15시 30분"
   - start_date/end_date 는 **신청기간에서만** 만든다. 진행일정 날짜를 end_date 로 쓰지 않는다.
@@ -183,8 +189,11 @@ python -m backend.crawler.crawl [--headless] [--max-pages N] [--no-detail] [--de
 - end_only: **dated 처럼 end_date 기준 D-Day**(end_date - 오늘). start_date 가 없으므로 **상태는 목록의 모집상태(source_status)를 사용**한다.
   (사이트 원본에 시작일이 비어 있는 공고다. 예: 74531 신청기간 "~ 2026-10-08 00 : 00", 목록 상태 모집중.)
   모집상태가 모집예정인 end_only 는 시작일을 모르므로 '시작 D-n' 을 만들 수 없다 — 표시 방식은 UI 단계에서 정한다.
-- unknown: D-Day 계산 불가, **목록 맨 뒤**에 둔다. 화면 표시는 always 와 구분해서 다룰 것(UI 단계에서 정함).
-- 정렬 순서: 모집중(dated, end_only) → 모집예정(dated) → always, unknown.
+- open: **마감일 미정**. end_date 가 없어 D-Day 를 만들지 않고 **'마감일 미정' 배지**로 표시한다. start_date 가 있으면 시작일은
+  표시용이다. 상태는 목록의 모집상태(source_status)를 사용하며, 정렬은 목록 상태와 무관하게 open 그룹에 둔다.
+  (예: "2026-09-20 ~ 00 : 00 [ 선착순 마감 ]" → start 2026-09-20, end 없음 / "~ 00 : 00 [ 선착순 마감 ]" → 날짜 없음)
+- unknown: D-Day 계산 불가, 신청기간을 해석할 수 없는 경우라 **'확인 필요'** 로 표시하고 **목록 맨 뒤**에 둔다. always 와 구분해서 다룰 것.
+- 정렬 순서: **dated(D-Day, 마감 임박 순; end_only 포함) → 모집예정(시작 D-n, 시작일 빠른 순) → open(마감일 미정 배지) → always(상시) → unknown(확인 필요)**.
 - 진행일정(schedule_text)은 D-Day 기준으로 쓰지 않는다. 표시용 텍스트일 뿐이다.
 
 ## 6. 테스트와 확인

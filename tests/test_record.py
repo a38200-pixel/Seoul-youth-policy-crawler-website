@@ -45,6 +45,18 @@ def test_schedule_text_is_never_classified():
     assert row["schedule_text"] == "2026-11-07 ~ 2026-11-08"
 
 
+def test_open_keeps_start_date_and_never_uses_schedule_as_end_date():
+    detail = {"period_text": "2026-09-20 ~ 00 : 00 [ 선착순 마감 ]", "schedule_text": "2026-10-07 ~ 2026-11-05"}
+    row = make_row(LIST_ITEM, detail)
+    assert (row["period_type"], row["start_date"], row["end_date"]) == ("open", "2026-09-20", None)
+    assert row["schedule_text"] == "2026-10-07 ~ 2026-11-05"
+
+
+def test_open_without_any_date_has_no_dates():
+    row = make_row(LIST_ITEM, {"period_text": "~ 00 : 00 [ 선착순 마감 ]", "schedule_text": "2026-10-07 ~ 2026-11-05"})
+    assert (row["period_type"], row["start_date"], row["end_date"]) == ("open", None, None)
+
+
 def test_detail_without_period_text_is_unknown():
     row = make_row(LIST_ITEM, {"period_text": None})
     assert row["period_type"] == "unknown"

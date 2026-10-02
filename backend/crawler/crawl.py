@@ -298,7 +298,7 @@ def run_crawl(fetcher, db_path, now, max_pages=None, no_detail=False, detail_lim
     return stats
 
 
-PERIOD_TYPES = ("dated", "end_only", "always", "unknown")
+PERIOD_TYPES = ("dated", "end_only", "open", "always", "unknown")
 
 
 def format_period_counts(rows):
@@ -330,14 +330,14 @@ def run_reclassify(db_path, now):
     return 0
 
 
-def format_detail_timing(timings):
-    """상세 요청 수, 합계, 건당 평균, 가장 느린 3건을 한 줄로. 시간에는 이동 사이 최소 대기(1초)가 포함된다."""
+def format_detail_timing(timings, top=5):
+    """상세 요청 수, 합계, 건당 평균, 가장 느린 top건을 한 줄로. 시간에는 이동 사이 최소 대기(1초)가 포함된다."""
     if not timings:
         return "상세 요청: 0건"
     total = sum(sec for _, sec in timings)
-    slowest = sorted(timings, key=lambda t: t[1], reverse=True)[:3]
+    slowest = sorted(timings, key=lambda t: t[1], reverse=True)[:top]
     return (f"상세 요청: {len(timings)}건 / 합계 {total:.1f}초 / 건당 평균 {total / len(timings):.2f}초(대기 포함) / "
-            "가장 느린 3건: " + ", ".join(f"{sid} {sec:.2f}초" for sid, sec in slowest))
+            f"가장 느린 {len(slowest)}건: " + ", ".join(f"{sid} {sec:.2f}초" for sid, sec in slowest))
 
 
 def log_summary(conn, stats, seen_ids):

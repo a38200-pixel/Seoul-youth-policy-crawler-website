@@ -221,6 +221,36 @@ def test_reclassify_updates_only_changed_rows(conn):
     assert get(conn, "a")["last_seen_at"] == NOW.isoformat()    # last_seen_at 은 건드리지 않음
 
 
+def test_open_rows_are_stored_with_start_only(conn):
+    cases = {"74184": ("2026-09-20 ~ 00 : 00 [ 선착순 마감 ]", "2026-09-20"),
+             "74180": ("~ 00 : 00 [ 선착순 마감 ]", None)}
+    for sid, (text, _) in cases.items():
+        upsert_program(conn, make_row(item(sid), {"period_text": text}), NOW)
+    for sid, (text, start) in cases.items():
+        r = get(conn, sid)
+        assert (r["period_type"], r["start_date"], r["end_date"], r["period_text"]) == ("open", start, None, text)
+
+
+def test_dated_to_open_clears_end_date(conn):
+    upsert_program(conn, make_row(item("6"), {"period_text": "2026-09-20 ~ 2026-10-31"}), NOW)
+    assert get(conn, "6")["end_date"] == "2026-10-31"
+    upsert_program(conn, make_row(item("6"), {"period_text": "2026-09-20 ~ 00 : 00 [ 선착순 마감 ]"}), LATER)
+    r = get(conn, "6")
+    assert (r["period_type"], r["start_date"], r["end_date"]) == ("open", "2026-09-20", None)
+
+
+def test_reclassify_moves_unknown_open_forms_to_open(conn):
+    put_raw(conn, "a", "2026-09-20 ~ 00 : 00 [ 선착순 마감 ]", "unknown", None, None)
+    put_raw(conn, "b", "~ 00 : 00 [ 선착순 마감 ]", "unknown", None, None)
+    put_raw(conn, "c", "추후 공지", "unknown", None, None)          # 해석 불가 → 그대로 unknown
+    changed = reclassify_periods(conn, LATER)
+    assert [c[0] for c in changed] == ["a", "b"]
+    assert changed[0][2] == ("open", "2026-09-20", None)
+    assert changed[1][2] == ("open", None, None)
+    assert get(conn, "c")["period_type"] == "unknown"
+    assert get(conn, "a")["detail_fetched_at"] is None               # 상세 수신 시각은 건드리지 않는다
+
+
 def test_reclassify_is_idempotent(conn):
     put_raw(conn, "a", "~ 2026-10-08", "unknown", None, None)
     assert len(reclassify_periods(conn, NOW)) == 1
