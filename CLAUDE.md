@@ -22,6 +22,8 @@ youth-dday/ (저장소 루트)
 │   └─ 01_explore_crawling.ipynb
 ├─ backend/
 │   ├─ app/                   # FastAPI 자리 (README만)
+│   ├─ service/
+│   │   └─ display.py         # 표시 규칙(D-Day·그룹·정렬·배지) 순수 함수, DB 접근 없음
 │   ├─ crawler/
 │   │   ├─ samples/           # list_sample.html, detail_sample.html (사용자가 직접 넣음)
 │   │   ├─ selectors.py       # CSS 셀렉터·URL 상수를 전부 여기 모음
@@ -244,6 +246,39 @@ python -m backend.crawler.crawl [--headless] [--max-pages N] [--no-detail] [--de
 - unknown: D-Day 계산 불가, 신청기간을 해석할 수 없는 경우라 **'확인 필요'** 로 표시하고 **목록 맨 뒤**에 둔다. always 와 구분해서 다룰 것.
 - 정렬 순서: **dated(D-Day, 마감 임박 순; end_only 포함) → 모집예정(시작 D-n, 시작일 빠른 순) → open(마감일 미정 배지) → always(상시) → unknown(확인 필요)**.
 - 진행일정(schedule_text)은 D-Day 기준으로 쓰지 않는다. 표시용 텍스트일 뿐이다.
+
+### 표시 규칙 (`backend/service/display.py`, 순수 함수)
+DB 접근 없음. `today` 는 인자로 주입하고 기본값은 Asia/Seoul 오늘이다. **날짜만 쓴다**: 시각(예: "18 : 00")은 무시하고
+진행일정(schedule_text)은 쓰지 않는다. 문자열 날짜에 offset 이 있으면 서울 날짜로 환산한다(`db.is_new` 와 같은 기준).
+
+`compute_display(row, today) -> {display_status, d_day, d_day_label, group, sort_key, source_status}`
+(`source_status` 는 사이트 상태를 **그대로** 함께 담는다.)
+
+| period_type | 조건 | display_status | d_day / d_day_label | group |
+|---|---|---|---|---|
+| dated / end_only | end_date < today | 마감 | None | `expired`(기본 숨김, 정렬 제외, sort_key None) |
+| dated | start_date > today | 모집예정 | start − today / `시작 D-n` | `upcoming` |
+| dated / end_only | 그 외 | 모집중 | end − today / 0 이면 `D-Day`, 아니면 `D-n` | `recruiting` |
+| open | start_date > today | 모집예정 | start − today / `시작 D-n` | `upcoming` |
+| open | 그 외(시작일 없음 포함) | 마감일 미정 | None | `open` |
+| always | category 있음 | 상시 | None | `always` |
+| always | category 없음/공백 | 상시 | None | `always_etc`(기본 숨김) |
+| unknown | | 확인 필요 | None | `unknown` |
+
+- 시작일이 미래면 **사이트 source_status 가 '모집중'이어도 날짜를 우선**해 모집예정으로 표시한다.
+- 그 밖의 경우: 상세 미수신(period_type NULL)·해석 불가·end_date 없는 dated/end_only 는 unknown 과 같이 '확인 필요'로 둔다.
+- **정렬 순서(group 순)**: 모집중(d_day 오름차순, 동률은 end_date → source_id) → 모집예정(start_date 오름차순) → 마감일 미정 →
+  상시 → 상시-기타 → 확인 필요. expired 는 정렬 대상에서 제외한다(`sort_programs`).
+  source_id 비교는 숫자 순서(9 < 10), 숫자가 아니면 뒤. 명세에 없던 그룹 내 정렬은 이렇게 정했다:
+  마감일 미정은 start_date 오름차순(없으면 뒤) → source_id, 상시는 분야(category) → source_id, 상시-기타·확인 필요는 source_id.
+- 기본 목록에서 숨기는 group: `expired`, `always_etc`(`HIDDEN_BY_DEFAULT`, `visible_by_default(display)`).
+
+`badges(first_seen_at, events, today, window_days=7)` — NEW 와 `program_changes` 이벤트로 배지를 만든다(BADGE_ORDER 순).
+- **NEW**: `db.is_new` (기준일 당일 첫 적재분은 NEW 가 아님).
+- **연장 / 단축 / 기간 변경 / 상태 변경**: 최근 window_days 이내 이벤트만, 종류별로 **가장 최근 1건**(같은 시각이면 id 가 큰 것). detail 에
+  `old → new` 문자열을 담는다(period_changed 는 `open 2026-09-20 ~ - → dated 2026-09-20 ~ 2026-10-20` 처럼 읽기 쉬운 문자열).
+- **재등록**(reactivated): window 이내 최근 1건, detail 없음. **deactivated 는 활성 행의 배지로 쓰지 않는다.**
+- window 판정은 is_new 와 같다: 날짜(서울) 차이가 window_days 이내(<=). 정확히 7일 차이는 포함, 8일 차이는 제외.
 
 ## 6. 테스트와 확인
 - tests 는 samples/ 의 HTML을 파일로 읽어 파싱 함수만 검증한다(네트워크 접속 없이). pytest 로 실행.
