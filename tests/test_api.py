@@ -340,6 +340,23 @@ def test_last_collected_at_ignores_inactive_rows(client, db):
     assert client.get("/api/meta").json()["last_collected_at"] == D2.isoformat()
 
 
+def test_last_collected_at_follows_a_more_recent_last_seen_at(client, db):
+    newer = D2L + timedelta(days=1)
+    c = sqlite3.connect(db)
+    c.execute("UPDATE programs SET last_seen_at = ? WHERE source_id = '102'", (newer.isoformat(),))   # 102: 활성
+    c.commit()
+    c.close()
+    assert client.get("/api/meta").json()["last_collected_at"] == newer.isoformat()
+
+
+def test_last_collected_at_null_when_no_active_rows(client, db):
+    c = sqlite3.connect(db)
+    c.execute("UPDATE programs SET is_active = 0")
+    c.commit()
+    c.close()
+    assert client.get("/api/meta").json()["last_collected_at"] is None
+
+
 def test_last_collected_at_null_when_no_last_seen_at(client, db):
     c = sqlite3.connect(db)
     c.execute("UPDATE programs SET last_seen_at = NULL")
