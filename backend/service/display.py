@@ -129,6 +129,25 @@ def sort_programs(rows, today=None):
     return pairs
 
 
+# ---------------------------------------------------------------- 마감일(end_date) 기준 판정
+CALENDAR_GROUPS = frozenset({GROUP_RECRUITING, GROUP_UPCOMING})   # 달력 점·날짜 필터에 쓰는 그룹(만료·마감일 없음은 제외)
+
+
+def end_date_of(row):
+    """행의 end_date → date(서울 기준). 없거나 해석 불가면 None."""
+    return _date(_get(row, "end_date"))
+
+
+def deadline_on(row, display, day=None):
+    """(row, compute_display 결과)가 달력/날짜 필터에 잡히는 공고인가. day 를 주면 그 날짜가 end_date 인지까지 본다.
+
+    recruiting·upcoming 이고 end_date 가 있는 행만 True. 상시·마감일 미정·확인 필요·만료는 어떤 날짜에도 걸리지 않는다.
+    /api/programs?date= 와 /api/calendar 가 이 함수 하나를 같이 써서 건수가 항상 같다.
+    """
+    end = end_date_of(row)
+    return display["group"] in CALENDAR_GROUPS and end is not None and (day is None or end == _date(day))
+
+
 # ---------------------------------------------------------------- 배지
 BADGE_LABELS = {
     "new": "NEW", "extended": "연장", "shortened": "단축", "period_changed": "기간 변경",

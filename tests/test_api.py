@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from backend.api import main, queries
 from backend.api.main import app, get_today
+from backend.crawler import normalizer
 from backend.crawler.db import deactivate_unseen, init_db, upsert_program
 from backend.crawler.record import make_row
 
@@ -372,6 +373,191 @@ def test_health(client):
 def test_get_today_defaults_to_seoul_today(monkeypatch):
     monkeypatch.setattr(main, "today_kst", lambda: date(2026, 10, 9))
     assert get_today() == date(2026, 10, 9)
+
+
+# ---------------------------------------------------------------- 날짜 필터(/api/programs?date=)와 /api/calendar
+@pytest.fixture
+def client_x(db, monkeypatch):
+    """기본 데이터 + 같은 날 마감·월 경계·모집예정 행을 더한 임시 DB. today=2026-10-02."""
+    c = init_db(db)
+    put(c, "140", "2026-09-25 ~ 2026-10-08", D2L, category="주거")                 # 101 과 같은 날 마감
+    put(c, "141", "2026-09-25 ~ 2026-10-31", D2L)                                  # 10월 말일 마감
+    put(c, "142", "2026-09-25 ~ 2026-11-01", D2L)                                  # 11월 1일 마감
+    put(c, "143", "2026-10-20 ~ 2026-11-30", D2L, status="모집예정", category="교육")   # 모집예정, 11월 말일 마감
+    put(c, "144", "2026-09-25 ~ 2026-12-01", D2L)                                  # 12월 1일 마감
+    c.commit()
+    c.close()
+    monkeypatch.setenv("YOUTH_DB_PATH", str(db))
+    app.dependency_overrides[get_today] = lambda: TODAY
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def cal(client, month, **params):
+    r = client.get("/api/calendar", params={"month": month, **params})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def cal_counts(client, month, **params):
+    return {d["date"]: d["count"] for d in cal(client, month, **params)["days"]}
+
+
+def test_date_filter_returns_only_programs_ending_that_day(client):
+    assert ids(client.get("/api/programs?date=2026-10-08")) == ["101"]
+    r = client.get("/api/programs?date=2026-10-21")
+    assert ids(r) == ["104"] and by_id(r, "104")["display_status"] == "모집예정"      # 모집예정도 end_date 로 걸린다
+
+
+def test_date_filter_today_deadline_is_d_day(client):
+    r = client.get("/api/programs?date=2026-10-02")
+    assert ids(r) == ["102"] and by_id(r, "102")["d_day_label"] == "D-Day"
+
+
+@pytest.mark.parametrize("day", ["2026-10-01", "2026-09-30", "2026-01-01"])
+def test_date_filter_past_dates_are_empty_even_for_expired_rows(client, day):
+    """105(2026-10-01 마감)는 활성이지만 만료라 숨겨진다. 날짜 필터가 만료 공고를 되살리지 않는다."""
+    r = client.get(f"/api/programs?date={day}&tab=all")
+    assert r.status_code == 200 and r.json()["total"] == 0 and r.json()["items"] == []
+
+
+def test_date_filter_ignores_inactive_rows(client):
+    assert client.get("/api/programs?date=2026-10-20&tab=all").json()["total"] == 0           # 120 은 비활성
+
+
+def test_programs_without_end_date_never_match_any_date(client_x):
+    no_end = {"106", "107", "108", "109", "110", "131"}                                      # open / 상시 / 상시-기타 / unknown / open
+    day = date(2026, 9, 25)
+    while day <= date(2026, 11, 5):
+        for tab in ("all", "deadline", "always", "etc"):
+            got = set(ids(client_x.get(f"/api/programs?date={day}&tab={tab}&limit=200")))
+            assert not (got & no_end), (day, tab, got)
+        day += timedelta(days=1)
+
+
+def test_date_filter_is_independent_of_tab_choice_rules(client):
+    assert client.get("/api/programs?date=2026-10-08&tab=always").json()["total"] == 0
+    assert ids(client.get("/api/programs?date=2026-10-08&tab=all")) == ["101"]
+    assert ids(client.get("/api/programs?date=2026-10-08&tab=deadline")) == ["101"]
+
+
+def test_date_filter_with_category_q_limit_offset_and_order(client_x):
+    assert ids(client_x.get("/api/programs?date=2026-10-08")) == ["101", "140"]                 # 정렬은 기존 그대로(동률은 source_id 숫자순)
+    assert ids(client_x.get("/api/programs?date=2026-10-08&category=주거")) == ["140"]
+    assert ids(client_x.get("/api/programs?date=2026-10-08&q=공고101")) == ["101"]
+    r = client_x.get("/api/programs?date=2026-10-08&limit=1&offset=1")
+    assert ids(r) == ["140"] and r.json()["total"] == 2                                      # total 은 페이지네이션 전 건수
+    assert client_x.get("/api/programs?date=2026-10-08&category=교육").json()["total"] == 0
+
+
+def test_counts_do_not_depend_on_date(client_x):
+    base = client_x.get("/api/programs").json()["counts"]
+    for day in ("2026-10-08", "2026-10-02", "2026-09-01"):
+        assert client_x.get(f"/api/programs?date={day}").json()["counts"] == base
+    # q·category 를 쓰면 그 필터는 반영되지만 date 는 여전히 무관하다
+    filtered = client_x.get("/api/programs?category=주거").json()["counts"]
+    assert client_x.get("/api/programs?category=주거&date=2026-10-08").json()["counts"] == filtered
+
+
+@pytest.mark.parametrize("bad", ["2026-13-01", "2026-02-30", "abc", "10/08/2026", ""])
+def test_date_filter_invalid_format_is_422(client, bad):
+    assert client.get("/api/programs", params={"date": bad}).status_code == 422
+
+
+def test_calendar_counts_per_day_and_exclusions(client_x):
+    got = cal_counts(client_x, "2026-10")
+    assert got == {"2026-10-02": 1, "2026-10-03": 1, "2026-10-07": 1, "2026-10-08": 2,
+                   "2026-10-21": 1, "2026-10-30": 1, "2026-10-31": 1}
+    # 제외: 만료(105: 10-01), 비활성(120: 10-20), open(106·131), 상시, unknown 은 어느 날짜에도 없다
+    assert "2026-10-01" not in got and "2026-10-20" not in got
+    assert "2026-10-21" in got                                                                # 모집예정(104)은 포함
+
+
+def test_calendar_response_is_sparse_sorted_and_has_today(client_x):
+    body = cal(client_x, "2026-10")
+    assert body["month"] == "2026-10" and body["today"] == "2026-10-02"
+    days = [d["date"] for d in body["days"]]
+    assert days == sorted(days) and len(days) == 7                                            # 31일을 다 채우지 않는다
+    assert all(d["count"] >= 1 for d in body["days"])
+
+
+def test_calendar_month_boundaries(client_x):
+    assert cal_counts(client_x, "2026-10")["2026-10-31"] == 1                                 # 말일 마감 포함
+    assert "2026-11-01" not in cal_counts(client_x, "2026-10")                                # 다음 달 1일 마감은 10월에 없다
+    assert cal_counts(client_x, "2026-11") == {"2026-11-01": 1, "2026-11-30": 1}              # 1일·말일(모집예정 143) 포함
+    assert "2026-12-01" not in cal_counts(client_x, "2026-11")
+
+
+def test_calendar_category_and_q_affect_dots(client_x):
+    assert cal_counts(client_x, "2026-10", category="주거") == {"2026-10-03": 1, "2026-10-08": 1}
+    assert cal_counts(client_x, "2026-10", q="마포구청") == {"2026-10-21": 1}                  # 기관명 매칭(programs 와 같은 방식)
+    assert cal_counts(client_x, "2026-10", q="없는검색어") == {}
+
+
+def test_calendar_month_without_data_has_empty_days(client_x):
+    body = cal(client_x, "2027-01")
+    assert body["days"] == [] and body["month"] == "2027-01"
+
+
+@pytest.mark.parametrize("bad", ["2026-13", "2026-00", "202610", "2026-1", "2026-10-01", "abcd-ef", "1999-12", "2101-01", ""])
+def test_calendar_invalid_month_is_422(client, bad):
+    assert client.get("/api/calendar", params={"month": bad}).status_code == 422
+
+
+def test_calendar_month_is_required_and_year_range_edges_are_ok(client):
+    assert client.get("/api/calendar").status_code == 422
+    assert cal(client, "2000-01")["days"] == [] and cal(client, "2100-12")["days"] == []
+
+
+def test_calendar_today_follows_dependency_override(client_x):
+    app.dependency_overrides[get_today] = lambda: date(2026, 10, 9)
+    body = cal(client_x, "2026-10")
+    assert body["today"] == "2026-10-09"
+    assert "2026-10-02" not in {d["date"] for d in body["days"]}                              # 그 날짜 기준으로 만료된 마감은 빠진다
+    assert "2026-10-08" not in {d["date"] for d in body["days"]}
+
+
+@pytest.mark.parametrize("params", [{}, {"category": "주거"}, {"category": "금융"}, {"q": "마포구청"}, {"q": "공고14"}])
+def test_calendar_count_equals_programs_total_for_every_date(client_x, params):
+    """불변식: 같은 필터에서 /api/programs?date=X 의 total == /api/calendar 의 X 날짜 count (점이 없는 날은 0)."""
+    counts = {}
+    for month in ("2026-10", "2026-11", "2026-12"):                                           # 데이터가 걸쳐 있는 모든 달
+        counts.update(cal_counts(client_x, month, **params))
+    probe = set()
+    for d in counts:
+        day = date.fromisoformat(d)
+        probe |= {d, (day - timedelta(days=1)).isoformat(), (day + timedelta(days=1)).isoformat()}
+    probe |= {"2026-10-01", "2026-10-20", "2027-01-01"}                                       # 만료·비활성·데이터 없는 날
+    assert counts, "필터가 모든 점을 지우면 이 테스트가 아무것도 검증하지 못한다"
+    for d in sorted(probe):
+        for tab in ("deadline", "all"):
+            r = client_x.get("/api/programs", params={"date": d, "tab": tab, "limit": 200, **params})
+            assert r.status_code == 200
+            assert r.json()["total"] == counts.get(d, 0), (d, tab, params)
+
+
+class _FakeDateTime(datetime):
+    fixed = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.fixed.astimezone(tz)
+
+
+@pytest.mark.parametrize("utc_instant, seoul_today, label", [
+    (datetime(2026, 10, 1, 14, 59, 59, tzinfo=timezone.utc), "2026-10-01", "D-1"),    # 서울 10-01 23:59:59
+    (datetime(2026, 10, 1, 15, 0, 0, tzinfo=timezone.utc), "2026-10-02", "D-Day"),    # 서울 10-02 00:00:00
+])
+def test_today_dependency_switches_exactly_at_seoul_midnight(db, monkeypatch, utc_instant, seoul_today, label):
+    """get_today 를 오버라이드하지 않고 시계만 고정한다. UTC 날짜가 아니라 서울 날짜로 달력·D-Day 가 바뀐다."""
+    _FakeDateTime.fixed = utc_instant
+    monkeypatch.setattr(normalizer, "datetime", _FakeDateTime)
+    monkeypatch.setenv("YOUTH_DB_PATH", str(db))
+    app.dependency_overrides.clear()
+    c = TestClient(app)
+    assert cal(c, "2026-10")["today"] == seoul_today
+    r = c.get("/api/programs?date=2026-10-02")                                                # 102: 2026-10-02 마감
+    assert ids(r) == ["102"] and by_id(r, "102")["d_day_label"] == label
 
 
 # ---------------------------------------------------------------- 읽기 전용 보장

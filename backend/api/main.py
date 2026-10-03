@@ -4,8 +4,10 @@
 - 표시 계산(D-Day·그룹·정렬·배지)은 backend/service/display.py 의 함수를 그대로 쓴다(규칙을 여기서 다시 구현하지 않는다).
 - today 는 의존성 get_today 로 주입한다(테스트에서 고정 가능). 기본값은 Asia/Seoul 오늘.
 """
+import re
 import sqlite3
 from collections import Counter
+from datetime import date as date_type
 from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -16,7 +18,7 @@ from backend.api import queries
 from backend.crawler.db import BASELINE_DATE, is_new
 from backend.crawler.normalizer import today_kst
 from backend.service import display as rules
-from backend.service.display import badges, compute_display, sort_programs
+from backend.service.display import badges, compute_display, deadline_on, end_date_of, sort_programs
 
 RECENT_DAYS = 7   # 배지·meta 의 '최근' 기준(일)
 CORS_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -110,6 +112,7 @@ def list_programs(
     tab: Tab = "deadline",
     q: Optional[str] = None,
     category: Optional[str] = None,
+    date: Optional[date_type] = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     conn=Depends(get_conn),
@@ -117,14 +120,48 @@ def list_programs(
 ):
     """활성 공고 목록. sort_programs 로 정렬한 뒤 필터와 페이지네이션을 적용한다.
 
-    counts 는 q·category 필터를 적용한 뒤의 탭별 건수다(탭 선택과는 무관). total 은 선택한 탭의 필터 후 건수.
+    counts 는 q·category 필터를 적용한 뒤의 탭별 건수다(탭 선택·date 와는 무관). total 은 선택한 탭과 date 필터 후 건수.
+    date 는 end_date 가 그 날짜인 공고만(만료 공고는 sort_programs 가 이미 뺐고, 마감일 없는 공고는 어떤 날짜에도 걸리지 않는다).
     """
     pairs = [(r, d) for r, d in sort_programs(queries.active_rows(conn), today) if _matches(r, q, category)]
     selected = pairs if tab == "all" else [p for p in pairs if p[1]["group"] in TAB_GROUPS[tab]]
+    if date is not None:
+        selected = [p for p in selected if deadline_on(p[0], p[1], date)]
     page = selected[offset: offset + limit]
     events = queries.events_by_source(queries.recent_events(conn, today, RECENT_DAYS))   # 쿼리 한 번(N+1 아님)
     items = [_item(r, d, badges(r["first_seen_at"], events.get(r["source_id"], []), today, RECENT_DAYS)) for r, d in page]
     return {"items": items, "total": len(selected), "counts": _tab_counts(pairs)}
+
+
+def _parse_month(month):
+    """'YYYY-MM' → (year, month). 형식이 틀리거나 연도가 2000~2100 밖이거나 월이 1~12 밖이면 422."""
+    m = re.fullmatch(r"(\d{4})-(\d{2})", month)
+    if not m or not (2000 <= int(m[1]) <= 2100) or not (1 <= int(m[2]) <= 12):
+        raise HTTPException(status_code=422, detail="month 는 YYYY-MM 형식이어야 하고 연도는 2000~2100 이다")
+    return int(m[1]), int(m[2])
+
+
+@app.get("/api/calendar")
+def calendar(
+    month: str = Query(..., description="YYYY-MM"),
+    q: Optional[str] = None,
+    category: Optional[str] = None,
+    conn=Depends(get_conn),
+    today=Depends(get_today),
+):
+    """월별 마감 달력. 그 달에 end_date 가 있는 모집중·모집예정 공고의 날짜별 건수(희소 형식: count >= 1 인 날짜만, 오름차순).
+
+    /api/programs?date= 와 같은 판정(deadline_on)과 같은 q·category 매칭을 쓴다.
+    """
+    year, mon = _parse_month(month)
+    counts = Counter()
+    for r, d in sort_programs(queries.active_rows(conn), today):
+        if _matches(r, q, category) and deadline_on(r, d):
+            end = end_date_of(r)
+            if (end.year, end.month) == (year, mon):
+                counts[end] += 1
+    return {"month": f"{year:04d}-{mon:02d}", "today": today.isoformat(),
+            "days": [{"date": day.isoformat(), "count": n} for day, n in sorted(counts.items())]}
 
 
 @app.get("/api/programs/{source_id}")
