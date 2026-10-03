@@ -73,7 +73,8 @@ def recent_events(conn, today, window_days):
     """
     since = (today - timedelta(days=window_days + 1)).isoformat()
     return conn.execute(
-        "SELECT c.id, c.source_id, c.change_type, c.old_value, c.new_value, c.reason, c.detected_at, p.title "
+        "SELECT c.id, c.source_id, c.change_type, c.old_value, c.new_value, c.reason, c.detected_at, "
+        "p.title, p.end_date, p.period_type "
         "FROM program_changes c LEFT JOIN programs p ON p.source_id = c.source_id "
         "WHERE c.detected_at >= ? ORDER BY c.detected_at DESC, c.id DESC", (since,)).fetchall()
 

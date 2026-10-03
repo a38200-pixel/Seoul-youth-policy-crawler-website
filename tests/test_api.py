@@ -560,6 +560,184 @@ def test_today_dependency_switches_exactly_at_seoul_midnight(db, monkeypatch, ut
     assert ids(r) == ["102"] and by_id(r, "102")["d_day_label"] == label
 
 
+# ---------------------------------------------------------------- /api/meta categories
+GROUPS = ("recruiting", "upcoming", "open", "always", "always_etc", "unknown")
+EXPECTED_GROUP_IDS = {
+    "recruiting": ["102", "103", "130", "101", "122"],
+    "upcoming": ["131", "104"],
+    "open": ["106"],
+    "always": ["108", "107"],
+    "always_etc": ["109"],
+    "unknown": ["110"],
+}
+
+
+@pytest.fixture
+def client_cat(db, monkeypatch):
+    """분야 동률(교육 3 = 주거 3)과 비어 있는 분야 행을 더한 임시 DB. today=2026-10-02."""
+    c = init_db(db)
+    put(c, "150", "2026-09-25 ~ 2026-11-10", D2L, category="교육")
+    put(c, "151", "2026-09-25 ~ 2026-11-11", D2L, category="   ")      # 공백뿐인 분야는 제외
+    put(c, "152", "2026-09-25 ~ 2026-11-12", D2L, category=None)       # 분야 없음은 제외
+    c.commit()
+    c.close()
+    monkeypatch.setenv("YOUTH_DB_PATH", str(db))
+    app.dependency_overrides[get_today] = lambda: TODAY
+    yield TestClient(app)
+    app.dependency_overrides.clear()
+
+
+def meta_categories(client):
+    r = client.get("/api/meta")
+    assert r.status_code == 200
+    return r.json()["categories"]
+
+
+def test_meta_categories_sorted_by_count_desc(client):
+    # 만료(105)·비활성(120, 121)·분야 없음(109)은 세지 않는다 → 금융은 6건(101,102,104,107,110,122)
+    assert meta_categories(client) == [
+        {"name": "금융", "count": 6}, {"name": "주거", "count": 3}, {"name": "교육", "count": 2}]
+
+
+def test_meta_categories_tie_sorted_by_name_and_blank_excluded(client_cat):
+    cats = meta_categories(client_cat)
+    assert cats == [{"name": "금융", "count": 6}, {"name": "교육", "count": 3}, {"name": "주거", "count": 3}]
+    assert all(c["name"].strip() for c in cats)
+    assert cats == sorted(cats, key=lambda c: (-c["count"], c["name"]))
+
+
+@pytest.mark.parametrize("fixture_name", ["client", "client_cat"])
+def test_meta_category_count_equals_programs_total_for_that_name(fixture_name, request):
+    """chip 의 name 으로 거르면 항상 결과가 나오고 total 이 count 와 같다(category 필터가 정확 일치이므로)."""
+    client = request.getfixturevalue(fixture_name)
+    cats = meta_categories(client)
+    assert cats
+    for c in cats:
+        r = client.get("/api/programs", params={"tab": "all", "category": c["name"], "limit": 200})
+        assert r.status_code == 200 and r.json()["total"] == c["count"] > 0, c
+
+
+def test_meta_categories_cover_exactly_the_tab_all_rows_with_a_category(client):
+    total_with_category = sum(c["count"] for c in meta_categories(client))
+    all_items = client.get("/api/programs?tab=all&limit=200").json()["items"]
+    assert total_with_category == sum(1 for i in all_items if (i["category"] or "").strip())
+
+
+# ---------------------------------------------------------------- /api/changes: end_date, period_type
+CHANGE_FIELDS = {"id", "type", "source_id", "title", "detected_at", "old_value", "new_value", "reason",
+                 "end_date", "period_type"}
+
+
+def change_body(client, **params):
+    r = client.get("/api/changes", params={"days": 7, **params})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def add_orphan_event(db):
+    """programs 에 행이 없는 source_id 의 이벤트."""
+    c = sqlite3.connect(db)
+    c.execute("INSERT INTO program_changes (source_id, change_type, old_value, new_value, reason, detected_at) "
+              "VALUES ('999', 'status_changed', '모집중', '모집예정', NULL, ?)", (D2L.isoformat(),))
+    c.commit()
+    c.close()
+
+
+def test_changes_items_carry_end_date_and_period_type(client):
+    by = {(i["type"], i["source_id"]): i for i in change_body(client)["items"]}
+    assert by[("deactivated", "121")]["end_date"] == "2026-10-01" and by[("deactivated", "121")]["period_type"] == "dated"
+    assert by[("deactivated", "120")]["end_date"] == "2026-10-20"
+    assert by[("extended", "101")]["end_date"] == "2026-10-08"
+    assert by[("new", "130")]["end_date"] == "2026-10-07" and by[("new", "130")]["period_type"] == "dated"   # 파생 NEW 도 붙는다
+    assert by[("new", "131")]["end_date"] is None and by[("new", "131")]["period_type"] == "open"           # 마감일 미정
+
+
+def test_changes_end_date_and_period_type_are_null_without_programs_row(client, db):
+    add_orphan_event(db)
+    item = next(i for i in change_body(client)["items"] if i["source_id"] == "999")
+    assert item["end_date"] is None and item["period_type"] is None and item["title"] is None
+
+
+def test_changes_existing_fields_and_counts_are_unchanged(client):
+    body = change_body(client)
+    assert all(set(i) == CHANGE_FIELDS for i in body["items"])
+    status = next(i for i in body["items"] if i["type"] == "status_changed" and i["source_id"] == "103")
+    assert (status["title"], status["old_value"], status["new_value"], status["reason"]) == ("공고103", "모집예정", "모집중", None)
+    assert body["counts"] == {"new": 2, "deactivated": 3, "reactivated": 1, "status_changed": 1, "extended": 1}
+    filtered = change_body(client, type="deactivated")
+    assert {i["type"] for i in filtered["items"]} == {"deactivated"} and filtered["total"] == 3
+    assert filtered["counts"] == body["counts"]                                                          # type 필터와 무관한 counts
+
+
+# ---------------------------------------------------------------- /api/programs group 필터와 group_counts
+def test_group_names_match_display_group_order():
+    import typing
+    from backend.service.display import GROUP_ORDER
+    assert tuple(typing.get_args(main.GroupName)) == GROUP_ORDER == GROUPS
+
+
+@pytest.mark.parametrize("group", GROUPS)
+def test_group_filter_returns_only_that_group(client, group):
+    r = client.get("/api/programs", params={"tab": "all", "group": group, "limit": 200})
+    assert ids(r) == EXPECTED_GROUP_IDS[group]
+    assert {i["group"] for i in r.json()["items"]} == {group}
+    assert r.json()["total"] == len(EXPECTED_GROUP_IDS[group])
+
+
+@pytest.mark.parametrize("bad", ["expired", "abc", "RECRUITING", ""])
+def test_group_filter_invalid_value_is_422(client, bad):
+    assert client.get("/api/programs", params={"group": bad}).status_code == 422
+
+
+def test_group_counts_values_and_expired_excluded(client):
+    gc = client.get("/api/programs").json()["group_counts"]
+    assert gc == {"recruiting": 5, "upcoming": 2, "open": 1, "always": 2, "always_etc": 1, "unknown": 1}
+    assert "expired" not in gc                                                                           # 105(만료)는 세지 않는다
+    assert sum(gc.values()) == client.get("/api/meta").json()["tab_counts"]["all"]
+
+
+def test_group_does_not_change_counts_or_group_counts(client):
+    base = client.get("/api/programs?tab=all").json()
+    for g in GROUPS:
+        r = client.get("/api/programs", params={"tab": "all", "group": g}).json()
+        assert r["counts"] == base["counts"] and r["group_counts"] == base["group_counts"]
+
+
+def test_group_counts_follow_q_and_category_like_counts(client):
+    r = client.get("/api/programs?category=주거").json()
+    assert r["group_counts"] == {"recruiting": 1, "upcoming": 1, "open": 1, "always": 0, "always_etc": 0, "unknown": 0}
+    assert r["counts"] == {"deadline": 3, "always": 0, "etc": 0}                                         # counts 와 같은 집합
+    assert client.get("/api/programs?q=마포구청").json()["group_counts"]["upcoming"] == 1
+    # tab·date 는 group_counts 에 영향이 없다
+    assert client.get("/api/programs?category=주거&tab=always&date=2026-10-08").json()["group_counts"] == r["group_counts"]
+
+
+def test_group_combines_with_tab_date_q_category(client):
+    assert ids(client.get("/api/programs?tab=all&group=recruiting&category=금융")) == ["102", "101", "122"]
+    assert ids(client.get("/api/programs?tab=all&group=recruiting&category=주거")) == ["103"]
+    assert ids(client.get("/api/programs?tab=all&group=recruiting&q=공고10")) == ["102", "103", "101"]
+    assert ids(client.get("/api/programs?tab=all&group=recruiting&date=2026-10-08")) == ["101"]
+    assert ids(client.get("/api/programs?tab=all&group=upcoming&date=2026-10-21")) == ["104"]
+    assert client.get("/api/programs?tab=all&group=upcoming&date=2026-10-08").json()["total"] == 0
+    assert client.get("/api/programs?tab=all&group=open&date=2026-10-08").json()["total"] == 0           # 마감일 없는 그룹은 날짜에 안 걸린다
+    # 기본 tab(deadline)과 모순되는 group 은 빈 결과
+    assert client.get("/api/programs?group=always").json()["total"] == 0
+    assert ids(client.get("/api/programs?group=open")) == ["106"]
+    page = client.get("/api/programs?tab=all&group=recruiting&limit=2&offset=1").json()
+    assert [i["source_id"] for i in page["items"]] == ["103", "130"] and page["total"] == 5
+
+
+@pytest.mark.parametrize("fixture_name", ["client", "client_x", "client_cat"])
+def test_group_total_equals_group_counts_without_filters(fixture_name, request):
+    """불변식: 필터가 없을 때 각 group 의 total == group_counts[g] (tab=all 기준. 기본 tab 은 deadline 그룹만 보인다)."""
+    client = request.getfixturevalue(fixture_name)
+    gc = client.get("/api/programs?tab=all").json()["group_counts"]
+    assert set(gc) == set(GROUPS)
+    for g in GROUPS:
+        r = client.get("/api/programs", params={"tab": "all", "group": g, "limit": 200})
+        assert r.json()["total"] == gc[g], g
+
+
 # ---------------------------------------------------------------- 읽기 전용 보장
 def all_get_requests(client):
     for url in ("/api/programs?tab=all&limit=200", "/api/programs/101", "/api/programs/120", "/api/changes?days=30",

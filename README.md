@@ -125,11 +125,11 @@ uvicorn backend.api.main:app --reload
 | 메서드 | 경로 | 설명 |
 |---|---|---|
 | GET | `/api/health` | 상태 확인 (`status`, `db_available`) |
-| GET | `/api/meta` | 오늘 날짜, 활성 건수, 탭별 건수, 마지막 수집 시각(활성 행의 `last_seen_at` 최댓값, 재분류는 반영 안 됨), 최근 7일 변경 종류별 건수, 기준일 |
-| GET | `/api/programs` | 활성 공고 목록. `tab`(deadline 기본 / always / etc / all), `q`, `category`, `date`(`YYYY-MM-DD`, 그 날짜가 마감일인 공고만), `limit`(기본 50, 최대 200), `offset` |
+| GET | `/api/meta` | 오늘 날짜, 활성 건수, 탭별 건수, 분야 목록(`categories`: 이름·건수, 많은 순), 마지막 수집 시각(활성 행의 `last_seen_at` 최댓값, 재분류는 반영 안 됨), 최근 7일 변경 종류별 건수, 기준일 |
+| GET | `/api/programs` | 활성 공고 목록. `tab`(deadline 기본 / always / etc / all), `q`, `category`, `group`(recruiting / upcoming / open / always / always_etc / unknown), `date`(`YYYY-MM-DD`, 그 날짜가 마감일인 공고만), `limit`(기본 50, 최대 200), `offset`. 응답의 `counts`·`group_counts` 는 `group`·`date` 와 무관 |
 | GET | `/api/calendar?month=YYYY-MM` | 월별 마감 달력. 마감일(end_date)이 그 달인 모집중·모집예정 공고의 날짜별 건수(`days`: 건수가 1 이상인 날짜만). `q`, `category` 사용 가능 |
 | GET | `/api/programs/{source_id}` | 공고 상세 + 변경 이력(최신순). 없으면 404, 비활성 행도 200 |
-| GET | `/api/changes?days=7&type=` | 최근 변경 목록(NEW 포함, 시각 내림차순) |
+| GET | `/api/changes?days=7&type=` | 최근 변경 목록(NEW 포함, 시각 내림차순). 항목마다 `end_date`·`period_type`(공고 행이 없으면 null) |
 
 ## 탐색 노트북
 

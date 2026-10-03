@@ -294,11 +294,11 @@ DB 접근 없음. `today` 는 인자로 주입하고 기본값은 Asia/Seoul 오
 | 메서드 | 경로 | 설명 |
 |---|---|---|
 | GET | `/api/health` | `{status, db_available}`. DB 를 열거나 만들지 않는다 |
-| GET | `/api/meta` | today, active_count, expired_active_count, tab_counts(deadline/always/etc/all), last_collected_at(활성 행의 last_seen_at 최댓값 — 목록 수집 때만 갱신되는 값. updated_at·detail_fetched_at 은 쓰지 않아 재분류 시각이 섞이지 않음. 없으면 null), events_7d(종류별), new_7d, baseline_date |
-| GET | `/api/programs` | 활성 공고 목록. 쿼리: `tab`=deadline(기본: 모집중+모집예정+마감일 미정)\|always\|etc(상시-기타)\|all(unknown 포함, expired 제외), `q`(제목·기관·분야 부분일치), `category`(분야 정확히), `date`(YYYY-MM-DD, 선택: end_date 가 그 날짜인 공고만. 형식 오류는 422), `limit`(기본 50, 1~200, 초과는 422), `offset`. 응답 `{items, total(탭·date 필터 후), counts{deadline, always, etc}}` |
+| GET | `/api/meta` | today, active_count, expired_active_count, tab_counts(deadline/always/etc/all), categories(`[{name, count}]`: /api/programs?tab=all 과 같은 범위에서 category 가 비어 있지 않은 것, count 내림차순·같으면 name 오름차순), last_collected_at(활성 행의 last_seen_at 최댓값 — 목록 수집 때만 갱신되는 값. updated_at·detail_fetched_at 은 쓰지 않아 재분류 시각이 섞이지 않음. 없으면 null), events_7d(종류별), new_7d, baseline_date |
+| GET | `/api/programs` | 활성 공고 목록. 쿼리: `tab`=deadline(기본: 모집중+모집예정+마감일 미정)\|always\|etc(상시-기타)\|all(unknown 포함, expired 제외), `q`(제목·기관·분야 부분일치), `category`(분야 정확히), `group`(recruiting\|upcoming\|open\|always\|always_etc\|unknown, 선택. 그 외 값·expired 는 422), `date`(YYYY-MM-DD, 선택: end_date 가 그 날짜인 공고만. 형식 오류는 422), `limit`(기본 50, 1~200, 초과는 422), `offset`. 응답 `{items, total(탭·date·group 필터 후), counts{deadline, always, etc}, group_counts{recruiting, upcoming, open, always, always_etc, unknown}}` |
 | GET | `/api/calendar` | 월별 마감 달력. 쿼리: `month`=YYYY-MM(필수, 형식 오류·연도 2000~2100 밖은 422), `q`·`category`(/api/programs 와 같은 의미·같은 매칭). 응답 `{month, today, days:[{date, count}]}` — count ≥ 1 인 날짜만, 날짜 오름차순(희소 형식) |
 | GET | `/api/programs/{source_id}` | 상세(목록 필드 + summary, target, schedule_text, is_active, history 최신순). 없으면 404. 비활성 행도 200 이며 `is_active=false`, display_status `비활성`, d_day 없음 |
-| GET | `/api/changes?days=7&type=` | 최근 변경 목록(시각 내림차순). 이벤트 + 파생 NEW(`type=new`, detected_at=first_seen_at). `days` 1~90, `type`=new\|extended\|shortened\|period_changed\|status_changed\|deactivated\|reactivated. 응답 `{days, total, counts(type 필터와 무관), items}` |
+| GET | `/api/changes?days=7&type=` | 최근 변경 목록(시각 내림차순). 이벤트 + 파생 NEW(`type=new`, detected_at=first_seen_at). `days` 1~90, `type`=new\|extended\|shortened\|period_changed\|status_changed\|deactivated\|reactivated. 응답 `{days, total, counts(type 필터와 무관), items}`. 항목 `{id, type, source_id, title, detected_at, old_value, new_value, reason, end_date, period_type}` — end_date(YYYY-MM-DD)·period_type 은 programs 를 source_id 로 붙여 가져오고 행이 없으면 둘 다 null |
 
 - 목록 item 필드: source_id, title, category, organization, display_status, group, d_day, d_day_label, source_status, period_text, start_date,
   end_date, apply_url, source_url, first_seen_at, badges. 정렬은 `sort_programs` 결과를 쓰고 **그 뒤에** 페이지네이션한다.
@@ -308,6 +308,9 @@ DB 접근 없음. `today` 는 인자로 주입하고 기본값은 Asia/Seoul 오
   - 달력 점은 **recruiting·upcoming 의 end_date 만** 센다(비활성·만료·상시·open·unknown 제외). `today` 는 `get_today` 의존성 값이다.
   - `counts`(programs)는 **date 와 무관**하다(q·category 만 반영). date 는 total 과 items 에만 반영된다.
 - `counts`(programs) 는 q·category 를 적용한 뒤의 탭별 건수(탭 선택과 무관)이고, 필터와 무관한 전체 건수는 `/api/meta` 의 `tab_counts`.
+- `group_counts` 는 `counts` 와 **같은 집합**(q·category 적용 후, 만료 제외)에서 display group 별로 센다. tab·date·group 과는 무관하다.
+  `group` 필터는 total·items 에만 반영된다. 필터가 없을 때 `/api/programs?tab=all&group=g` 의 total 은 `group_counts[g]` 와 같다(기본 tab 인 deadline 은 상시 그룹을 보여 주지 않는다).
+- `category` 필터는 **정확 일치**이고 category 컬럼은 한 값이다. `/api/meta` 의 `categories[].name` 으로 거르면 `tab=all` 의 total 이 count 와 같다.
 - badges 는 최근 7일 이벤트를 **쿼리 한 번**으로 모아 계산한다(N+1 금지). `/api/changes` 의 NEW 는 활성 행만, 이벤트는 비활성 행 것도 포함한다
   (deactivated 의 `reason` = expired/early). 일수·window 경계는 `is_new`/`badges` 와 같다(정확히 N일 전은 포함, N+1일 전은 제외).
 

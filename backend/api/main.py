@@ -30,6 +30,8 @@ TAB_GROUPS = {
     "etc": frozenset({rules.GROUP_ALWAYS_ETC}),
 }
 Tab = Literal["deadline", "always", "etc", "all"]   # all: unknown 포함, expired 제외(sort_programs 가 expired 를 뺀다)
+# 표시 규칙(display.GROUP_ORDER)의 group. expired 는 목록에서 빠지는 그룹이라 필터 값으로 받지 않는다(테스트가 GROUP_ORDER 와 같은지 확인).
+GroupName = Literal["recruiting", "upcoming", "open", "always", "always_etc", "unknown"]
 ChangeType = Literal["new", "extended", "shortened", "period_changed", "status_changed", "deactivated", "reactivated"]
 
 app = FastAPI(title="서울 청년정책 마감 D-Day API (읽기 전용)", version="1.0.0")
@@ -100,6 +102,27 @@ def _tab_counts(pairs):
     return {name: sum(1 for _, d in pairs if d["group"] in groups) for name, groups in TAB_GROUPS.items()}
 
 
+def _group_counts(pairs):
+    """display group 별 건수. counts 와 같은 집합(q·category 적용 후, 만료 제외)에서 센다."""
+    counted = Counter(d["group"] for _, d in pairs)
+    return {g: counted.get(g, 0) for g in rules.GROUP_ORDER}
+
+
+def _categories(pairs):
+    """/api/programs?tab=all 과 같은 범위(활성·만료 아님)에서 category 가 비어 있지 않은 것의 건수. 많은 순, 같으면 이름 순.
+
+    name 은 DB 값 그대로다(/api/programs 의 category 필터가 정확 일치라서, 이 name 으로 거르면 건수와 total 이 같다).
+    """
+    counted = Counter(r["category"] for r, _ in pairs if (r["category"] or "").strip())
+    return [{"name": name, "count": n} for name, n in sorted(counted.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
+def _end_date_text(value):
+    """DB 의 end_date → 'YYYY-MM-DD'. 없거나 해석 불가면 None."""
+    d = end_date_of({"end_date": value})
+    return d.isoformat() if d else None
+
+
 # ---------------------------------------------------------------- 엔드포인트
 @app.get("/api/health")
 def health():
@@ -113,6 +136,7 @@ def list_programs(
     q: Optional[str] = None,
     category: Optional[str] = None,
     date: Optional[date_type] = None,
+    group: Optional[GroupName] = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     conn=Depends(get_conn),
@@ -120,17 +144,21 @@ def list_programs(
 ):
     """활성 공고 목록. sort_programs 로 정렬한 뒤 필터와 페이지네이션을 적용한다.
 
-    counts 는 q·category 필터를 적용한 뒤의 탭별 건수다(탭 선택·date 와는 무관). total 은 선택한 탭과 date 필터 후 건수.
+    counts·group_counts 는 q·category 필터를 적용한 뒤의 탭별/그룹별 건수다(탭 선택·date·group 과는 무관, 만료 제외).
+    total 은 선택한 탭과 date·group 필터 후 건수.
     date 는 end_date 가 그 날짜인 공고만(만료 공고는 sort_programs 가 이미 뺐고, 마감일 없는 공고는 어떤 날짜에도 걸리지 않는다).
+    group 은 표시 규칙(compute_display)이 계산한 group 으로 거른다.
     """
     pairs = [(r, d) for r, d in sort_programs(queries.active_rows(conn), today) if _matches(r, q, category)]
     selected = pairs if tab == "all" else [p for p in pairs if p[1]["group"] in TAB_GROUPS[tab]]
     if date is not None:
         selected = [p for p in selected if deadline_on(p[0], p[1], date)]
+    if group is not None:
+        selected = [p for p in selected if p[1]["group"] == group]
     page = selected[offset: offset + limit]
     events = queries.events_by_source(queries.recent_events(conn, today, RECENT_DAYS))   # 쿼리 한 번(N+1 아님)
     items = [_item(r, d, badges(r["first_seen_at"], events.get(r["source_id"], []), today, RECENT_DAYS)) for r, d in page]
-    return {"items": items, "total": len(selected), "counts": _tab_counts(pairs)}
+    return {"items": items, "total": len(selected), "counts": _tab_counts(pairs), "group_counts": _group_counts(pairs)}
 
 
 def _parse_month(month):
@@ -198,12 +226,14 @@ def list_changes(
     """
     items = [
         {"id": e["id"], "type": e["change_type"], "source_id": e["source_id"], "title": e["title"],
-         "detected_at": e["detected_at"], "old_value": e["old_value"], "new_value": e["new_value"], "reason": e["reason"]}
+         "detected_at": e["detected_at"], "old_value": e["old_value"], "new_value": e["new_value"], "reason": e["reason"],
+         "end_date": _end_date_text(e["end_date"]), "period_type": e["period_type"]}   # programs 행이 없으면 둘 다 None
         for e in queries.recent_events(conn, today, days) if queries.within_days(e["detected_at"], today, days)
     ]
     items += [
         {"id": None, "type": "new", "source_id": r["source_id"], "title": r["title"], "detected_at": r["first_seen_at"],
-         "old_value": None, "new_value": None, "reason": None}
+         "old_value": None, "new_value": None, "reason": None,
+         "end_date": _end_date_text(r["end_date"]), "period_type": r["period_type"]}
         for r in queries.active_rows(conn) if is_new(r["first_seen_at"], today=today, window_days=days)
     ]
     counts = dict(Counter(i["type"] for i in items))
@@ -226,6 +256,7 @@ def meta(conn=Depends(get_conn), today=Depends(get_today)):
         "active_count": len(rows),
         "expired_active_count": len(rows) - len(pairs),      # 활성이지만 마감이 지나 목록에서 빠지는 행
         "tab_counts": tab_counts,
+        "categories": _categories(pairs),                    # tab=all 과 같은 범위, 많은 순(같으면 이름 순)
         "last_collected_at": queries.last_collected_at(conn),
         "window_days": RECENT_DAYS,
         "events_7d": dict(Counter(e["change_type"] for e in events)),
