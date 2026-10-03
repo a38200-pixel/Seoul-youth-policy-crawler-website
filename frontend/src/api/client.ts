@@ -2,6 +2,7 @@ import type {
   CalendarResponse,
   ChangeList,
   ChangeType,
+  GroupName,
   Meta,
   ProgramDetail,
   ProgramList,
@@ -72,6 +73,7 @@ export type ProgramQuery = {
   q?: string
   category?: string | null
   date?: string | null
+  group?: GroupName | null
   limit: number
   offset?: number
 }
@@ -87,6 +89,7 @@ export const api = {
         q: query.q,
         category: query.category,
         date: query.date,
+        group: query.group,
         limit: query.limit,
         offset: query.offset,
       },

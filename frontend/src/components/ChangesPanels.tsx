@@ -3,7 +3,7 @@ import { api } from '../api/client'
 import { useRequest } from '../api/hooks'
 import type { AsyncState } from '../api/hooks'
 import type { ChangeItem, ChangeList, ChangeType } from '../api/types'
-import { CHANGE_FILTERS, eventLabel, formatChange } from '../lib/changes'
+import { CHANGE_FILTERS, countFor, eventLabel, formatChange, hasEndDate } from '../lib/changes'
 import { formatShortDateTime } from '../lib/dates'
 import { Empty, ErrorView, Loading } from './common'
 import type { OpenHandler } from './ProgramCard'
@@ -46,10 +46,10 @@ export function ChangesSummary({ state, onViewAll }: { state: AsyncState<ChangeL
   )
 }
 
-function mergeChanges(lists: ChangeList[]): { items: ChangeItem[]; total: number } {
+function mergeChanges(lists: ChangeList[]): { items: ChangeItem[]; total: number; counts: ChangeList['counts'] } {
   const items = lists.flatMap((l) => l.items)
   items.sort((a, b) => Date.parse(b.detected_at) - Date.parse(a.detected_at)) // 서버가 준 시각끼리 비교(브라우저 시계 아님)
-  return { items, total: items.length }
+  return { items, total: items.length, counts: lists[0]?.counts ?? {} } // counts 는 type 필터와 무관해서 어느 응답이든 같다
 }
 
 function eventTone(type: ChangeType): string {
@@ -92,13 +92,16 @@ export function ChangesView({ onOpen }: { onOpen: OpenHandler }) {
           <h2 className="section-title">
             최근 {CHANGE_DAYS}일 변경 <span className="section-count">{state.data.total}건</span>
           </h2>
+          <p className="section-note">
+            전체 {countFor(state.data.counts, filter.types)}건 중 {Math.min(visible, state.data.items.length)}건 표시
+          </p>
           <ul className="events">
             {state.data.items.slice(0, visible).map((e) => {
               const change = formatChange(e.type, e.old_value, e.new_value)
               return (
                 <li key={`${e.type}|${e.source_id}|${e.detected_at}|${e.id ?? ''}`}>
                   <button type="button" className="event-row" onClick={(ev) => onOpen(e.source_id, ev.currentTarget)}>
-                    <span className={`badge badge-${eventTone(e.type)}`}>{eventLabel(e.type, e.reason)}</span>
+                    <span className={`badge badge-${eventTone(e.type)}`}>{eventLabel(e.type, e.reason, hasEndDate(e.end_date))}</span>
                     <span className="event-title">{e.title ?? e.source_id}</span>
                     <span className="event-date">{formatShortDateTime(e.detected_at)}</span>
                     {change ? <span className="event-change">{change}</span> : null}

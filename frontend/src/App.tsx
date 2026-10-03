@@ -14,23 +14,6 @@ import type { TabId } from './components/TabBar'
 import { formatKoreanDay, monthOf } from './lib/dates'
 
 const noop = () => {}
-const CATEGORY_PAGE = 200 // 서버 limit 상한
-
-/**
- * 분야 칩의 목록. /api/meta 에 분야 목록이 없어서 /api/programs?tab=all 을 끝까지 읽어 category 값을 모은다(많이 나온 순).
- * (분야가 비어 있는 상시-기타 공고는 tab=all 에 없으므로 칩에도 없다.)
- */
-async function loadCategories(signal: AbortSignal): Promise<string[]> {
-  const freq = new Map<string, number>()
-  let offset = 0
-  for (;;) {
-    const r = await api.programs({ tab: 'all', limit: CATEGORY_PAGE, offset }, signal)
-    for (const p of r.items) if (p.category) freq.set(p.category, (freq.get(p.category) ?? 0) + 1)
-    offset += r.items.length
-    if (r.items.length === 0 || offset >= r.total) break
-  }
-  return [...freq.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko')).map(([name]) => name)
-}
 
 function Main({ meta }: { meta: Meta }) {
   const [tab, setTab] = useState<TabId>('deadline')
@@ -47,7 +30,6 @@ function Main({ meta }: { meta: Meta }) {
     `counts|${q}|${category ?? ''}`,
   )
   const changes7 = useRequest((signal) => api.changes(7, undefined, signal), 'changes7')
-  const categories = useRequest(loadCategories, 'categories')
 
   const openDetail = useCallback((id: string, opener: HTMLElement) => {
     openerRef.current = opener
@@ -76,7 +58,7 @@ function Main({ meta }: { meta: Meta }) {
         onTab={setTab}
         counts={countsState.status === 'ok' ? countsState.data.counts : null}
         changesTotal={changes7.status === 'ok' ? changes7.data.total : null}
-        categories={categories.status === 'ok' ? categories.data : []}
+        categories={meta.categories.map((c) => c.name)}
         category={category}
         onCategory={setCategory}
       />

@@ -8,6 +8,10 @@ const META = {
   active_count: 6,
   expired_active_count: 0,
   tab_counts: { deadline: 3, always: 2, etc: 1, all: 6 },
+  categories: [
+    { name: '일자리', count: 56 },
+    { name: '주거', count: 36 },
+  ],
   last_collected_at: '2026-10-03T07:12:00+09:00',
   window_days: 7,
   events_7d: {},
@@ -15,18 +19,36 @@ const META = {
   baseline_date: '2026-10-01',
 }
 
+const gc = (o: Partial<Record<string, number>> = {}) => ({
+  recruiting: 0,
+  upcoming: 0,
+  open: 0,
+  always: 0,
+  always_etc: 0,
+  unknown: 0,
+  ...o,
+})
+
 let requested: URL[] = []
 let metaStatus = 200
 let programsBody: ((url: URL) => unknown) | null = null
+let changesBody: (() => unknown) | null = null
 
 function body(url: URL): unknown {
   switch (url.pathname) {
     case '/api/meta':
       return META
     case '/api/programs':
-      return programsBody ? programsBody(url) : { items: [], total: 0, counts: { deadline: 3, always: 2, etc: 1 } }
+      return programsBody
+        ? programsBody(url)
+        : {
+            items: [],
+            total: 0,
+            counts: { deadline: 3, always: 2, etc: 1 },
+            group_counts: gc({ recruiting: 3, always: 2, always_etc: 1 }),
+          }
     case '/api/changes':
-      return { days: 7, total: 0, counts: {}, items: [] }
+      return changesBody ? changesBody() : { days: 7, total: 0, counts: {}, items: [] }
     case '/api/calendar':
       return { month: url.searchParams.get('month'), today: '2026-10-03', days: [{ date: '2026-10-06', count: 26 }] }
     default:
@@ -42,6 +64,7 @@ beforeEach(() => {
   requested = []
   metaStatus = 200
   programsBody = null
+  changesBody = null
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
@@ -108,7 +131,24 @@ describe('App 요청 URL', () => {
   })
 })
 
-describe('마감일 미정 섹션', () => {
+describe('분야 칩', () => {
+  it('/api/meta 의 categories 에서 오고, tab=all 전체 읽기를 하지 않는다', async () => {
+    render(<App />)
+    expect(await screen.findByRole('button', { name: '일자리' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '주거' })).toBeTruthy()
+    await waitFor(() => expect(has('/api/programs', { tab: 'deadline', date: '2026-10-03' })).toBe(true))
+    expect(calls('/api/meta')).toHaveLength(1) // 최초 1회 요청 1번
+    expect(has('/api/programs', { tab: 'all' })).toBe(false)
+  })
+
+  it('칩을 누르면 category 파라미터로 요청한다', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: '주거' }))
+    await waitFor(() => expect(has('/api/programs', { tab: 'deadline', category: '주거', date: '2026-10-03' })).toBe(true))
+  })
+})
+
+describe('마감일 미정 섹션 (group_counts.open 기준)', () => {
   const program = (id: string, group: string, title: string) => ({
     source_id: id,
     title,
@@ -128,36 +168,91 @@ describe('마감일 미정 섹션', () => {
     badges: [],
   })
 
-  it('목록 끝쪽의 group=open 항목은 미정 섹션에만 보이고 곧 마감에는 나오지 않는다', async () => {
-    const all = [program('1', 'recruiting', '마감 임박 공고 A'), program('2', 'recruiting', '마감 임박 공고 B'), program('3', 'open', '마감일 미정 공고 C')]
+  it('group_counts.open 이 1 이상이면 group=open 으로 항목을 가져와 보여 주고, 곧 마감에는 나오지 않는다', async () => {
+    const recruiting = [program('1', 'recruiting', '마감 임박 공고 A'), program('2', 'recruiting', '마감 임박 공고 B')]
+    const open = [program('3', 'open', '마감일 미정 공고 C')]
     programsBody = (url) => {
       const counts = { deadline: 3, always: 0, etc: 0 }
-      if (url.searchParams.get('date')) return { items: [], total: 0, counts } // 오늘 마감 없음
+      const group_counts = gc({ recruiting: 2, open: 1 })
+      if (url.searchParams.get('group') === 'open') return { items: open, total: 1, counts, group_counts }
+      if (url.searchParams.get('date')) return { items: [], total: 0, counts, group_counts } // 오늘 마감 없음
       const offset = Number(url.searchParams.get('offset') ?? 0)
       const limit = Number(url.searchParams.get('limit'))
-      return { items: all.slice(offset, offset + limit), total: 3, counts }
+      return { items: [...recruiting, ...open].slice(offset, offset + limit), total: 3, counts, group_counts }
     }
     render(<App />)
     expect(await screen.findByText('마감일 미정 공고 C')).toBeTruthy()
     const openSection = screen.getByLabelText('마감일 미정')
-    expect(openSection.textContent).toContain('마감일 미정 공고 C')
-    expect(openSection.textContent).toContain('1건')
+    expect(openSection.textContent).toContain('1건') // 개수는 group_counts.open
     await waitFor(() => expect(screen.getByLabelText('곧 마감').textContent).toContain('마감 임박 공고 B'))
     const soon = screen.getByLabelText('곧 마감')
     expect(soon.textContent).toContain('마감 임박 공고 A')
     expect(soon.textContent).not.toContain('마감일 미정 공고 C')
+    expect(has('/api/programs', { tab: 'deadline', group: 'open' })).toBe(true)
+    // 목록 끝을 훑어 미정을 찾는 요청(group 없이 limit=50)은 더 이상 없다
+    expect(requested.some((u) => u.pathname === '/api/programs' && !u.searchParams.has('group') && u.searchParams.get('limit') === '50')).toBe(false)
   })
 
-  it('미정 항목이 없으면 섹션 자체가 없다', async () => {
+  it('group_counts.open 이 0 이면 섹션도 group=open 요청도 없다', async () => {
     const all = [program('1', 'recruiting', '마감 임박 공고 A')]
     programsBody = (url) => {
       const counts = { deadline: 1, always: 0, etc: 0 }
-      if (url.searchParams.get('date')) return { items: [], total: 0, counts }
-      return { items: all, total: 1, counts }
+      const group_counts = gc({ recruiting: 1 })
+      if (url.searchParams.get('date')) return { items: [], total: 0, counts, group_counts }
+      return { items: all, total: 1, counts, group_counts }
     }
     render(<App />)
     expect(await screen.findByText('마감 임박 공고 A')).toBeTruthy()
     expect(screen.queryByLabelText('마감일 미정')).toBeNull()
+    expect(has('/api/programs', { group: 'open' })).toBe(false)
+  })
+})
+
+describe('최근 변경 탭 문구', () => {
+  const change = (id: number, reason: string, endDate: string | null, title: string) => ({
+    id,
+    type: 'deactivated',
+    source_id: String(id),
+    title,
+    detected_at: '2026-10-03T07:00:00+09:00',
+    old_value: '1',
+    new_value: '0',
+    reason,
+    end_date: endDate,
+    period_type: endDate ? 'dated' : 'always',
+  })
+
+  it('deactivated 문구는 reason 과 end_date 로 갈린다', async () => {
+    changesBody = () => ({
+      days: 7,
+      total: 3,
+      counts: { deactivated: 3 },
+      items: [
+        change(1, 'expired', '2026-10-02', '만료된 공고'),
+        change(2, 'early', '2026-10-20', '마감일 전에 내려간 공고'),
+        change(3, 'early', null, '상시였던 공고'),
+      ],
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /^최근 변경/ }))
+    expect(await screen.findByText('마감됨')).toBeTruthy()
+    expect(screen.getByText('마감일 전에 목록에서 내려감')).toBeTruthy()
+    expect(screen.getByText('게시 종료')).toBeTruthy()
+    expect(screen.getByText('전체 3건 중 3건 표시')).toBeTruthy()
+  })
+
+  it('전체 N건 중 M건 표시: 50건씩 늘어난다', async () => {
+    changesBody = () => ({
+      days: 7,
+      total: 60,
+      counts: { deactivated: 60 },
+      items: Array.from({ length: 60 }, (_, i) => change(i + 1, 'expired', '2026-10-02', `공고 ${i + 1}`)),
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /^최근 변경/ }))
+    expect(await screen.findByText('전체 60건 중 50건 표시')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '더 보기' }))
+    expect(await screen.findByText('전체 60건 중 60건 표시')).toBeTruthy()
   })
 })
 

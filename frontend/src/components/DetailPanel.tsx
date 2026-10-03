@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { api } from '../api/client'
 import { useRequest } from '../api/hooks'
 import type { ProgramDetail } from '../api/types'
-import { eventLabel, formatChange } from '../lib/changes'
+import { eventLabel, formatChange, hasEndDate } from '../lib/changes'
 import { formatShortDateTime } from '../lib/dates'
 import { BadgeList, ErrorView, Loading } from './common'
 
@@ -59,7 +59,7 @@ function Body({ d }: { d: ProgramDetail }) {
             return (
               <li key={`${h.id ?? 'n'}-${i}`}>
                 <span className="history-date">{formatShortDateTime(h.detected_at)}</span>
-                <span className="history-label">{eventLabel(h.change_type, h.reason)}</span>
+                <span className="history-label">{eventLabel(h.change_type, h.reason, hasEndDate(d.end_date))}</span>
                 {change ? <span className="history-change">{change}</span> : null}
               </li>
             )

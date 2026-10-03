@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CHANGE_FILTERS, badgeText, badgeTone, eventLabel, formatChange } from './changes'
+import { CHANGE_FILTERS, badgeText, badgeTone, countFor, eventLabel, formatChange, hasEndDate } from './changes'
 import { ddayTone, deadlineLine, extractEndTime } from './deadline'
 
 describe('eventLabel (이벤트 문구 선택 규칙)', () => {
@@ -28,6 +28,36 @@ describe('eventLabel (이벤트 문구 선택 규칙)', () => {
     expect(eventLabel('shortened', null)).toBe('마감 단축')
     expect(eventLabel('period_changed', null)).toBe('기간 변경')
     expect(eventLabel('reactivated', null)).toBe('다시 게시됨')
+  })
+})
+
+describe('hasEndDate 와 eventLabel 의 연결 (문구 규칙의 세 갈래)', () => {
+  it('end_date 가 있으면 true, null 이면 false, 필드가 없으면 undefined', () => {
+    expect(hasEndDate('2026-10-20')).toBe(true)
+    expect(hasEndDate(null)).toBe(false)
+    expect(hasEndDate('')).toBe(false)
+    expect(hasEndDate(undefined)).toBeUndefined()
+  })
+
+  it('reason=early 는 end_date 로 문구가 갈린다', () => {
+    expect(eventLabel('deactivated', 'early', hasEndDate('2026-10-20'))).toBe('마감일 전에 목록에서 내려감')
+    expect(eventLabel('deactivated', 'early', hasEndDate(null))).toBe('게시 종료')
+    expect(eventLabel('deactivated', 'early', hasEndDate(undefined))).toBe('목록에서 내려감')
+  })
+
+  it('reason=expired 는 end_date 와 무관하게 마감됨', () => {
+    expect(eventLabel('deactivated', 'expired', hasEndDate('2026-10-02'))).toBe('마감됨')
+    expect(eventLabel('deactivated', 'expired', hasEndDate(null))).toBe('마감됨')
+  })
+})
+
+describe('countFor (전체 N건)', () => {
+  const counts = { new: 33, deactivated: 37, status_changed: 2 }
+  it('유형이 없으면 전체 합, 있으면 그 유형들의 합', () => {
+    expect(countFor(counts, [])).toBe(72)
+    expect(countFor(counts, ['deactivated'])).toBe(37)
+    expect(countFor(counts, ['extended', 'shortened'])).toBe(0)
+    expect(countFor({}, [])).toBe(0)
   })
 })
 

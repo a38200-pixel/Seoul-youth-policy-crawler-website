@@ -31,6 +31,18 @@ export function eventLabel(type: ChangeType, reason: string | null | undefined, 
   }
 }
 
+/** /api/changes 항목의 end_date 로 '마감일이 있던 공고인가'를 정한다. 필드가 없으면(undefined) 알 수 없다. */
+export function hasEndDate(endDate: string | null | undefined): boolean | undefined {
+  if (endDate === undefined) return undefined
+  return endDate !== null && endDate !== ''
+}
+
+/** 변경 건수. types 가 비어 있으면 전체 유형의 합(/api/changes 의 counts 는 type 필터와 무관한 종류별 건수). */
+export function countFor(counts: Partial<Record<ChangeType, number>>, types: ChangeType[]): number {
+  const keys = types.length === 0 ? (Object.keys(counts) as ChangeType[]) : types
+  return keys.reduce((sum, t) => sum + (counts[t] ?? 0), 0)
+}
+
 function periodValue(value: string): string {
   try {
     const d = JSON.parse(value) as { period_type?: string; start_date?: string | null; end_date?: string | null }

@@ -28,10 +28,16 @@ export type Program = {
 
 export type TabCounts = { deadline: number; always: number; etc: number }
 
+/** 표시 규칙의 group(만료는 목록에 없다). */
+export type GroupName = 'recruiting' | 'upcoming' | 'open' | 'always' | 'always_etc' | 'unknown'
+export type GroupCounts = Record<GroupName, number>
+
 export type ProgramList = {
   items: Program[]
   total: number
   counts: TabCounts
+  /** counts 와 같은 집합(q·category 적용 후)의 group 별 건수. tab·date·group 과는 무관하다. */
+  group_counts: GroupCounts
 }
 
 export type ChangeType =
@@ -69,6 +75,9 @@ export type ChangeItem = {
   old_value: string | null
   new_value: string | null
   reason: string | null
+  /** 공고(programs 행)의 마감일. 행이 없거나 마감일이 없으면 null. */
+  end_date: string | null
+  period_type: string | null
 }
 
 export type ChangeList = {
@@ -78,11 +87,15 @@ export type ChangeList = {
   items: ChangeItem[]
 }
 
+export type CategoryCount = { name: string; count: number }
+
 export type Meta = {
   today: string
   active_count: number
   expired_active_count: number
   tab_counts: TabCounts & { all: number }
+  /** 분야 칩: tab=all 과 같은 범위, count 내림차순(같으면 name 오름차순). name 으로 category 필터를 걸면 count 와 total 이 같다. */
+  categories: CategoryCount[]
   last_collected_at: string | null
   window_days: number
   events_7d: Partial<Record<ChangeType, number>>

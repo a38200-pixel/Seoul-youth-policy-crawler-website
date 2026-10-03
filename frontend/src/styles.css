@@ -663,6 +663,12 @@ dd {
   margin-bottom: 8px;
 }
 
+.section-note {
+  margin: -4px 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 /* ---------- 상세 패널 ---------- */
 .overlay {
   position: fixed;
