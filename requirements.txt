@@ -4,3 +4,6 @@ tzdata
 pandas
 pytest
 jupyter
+fastapi
+uvicorn
+httpx

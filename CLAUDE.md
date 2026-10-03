@@ -21,7 +21,10 @@ youth-dday/ (저장소 루트)
 ├─ notebooks/
 │   └─ 01_explore_crawling.ipynb
 ├─ backend/
-│   ├─ app/                   # FastAPI 자리 (README만)
+│   ├─ app/                   # (사용 안 함, 빈 자리) FastAPI 는 아래 api/ 에 구현
+│   ├─ api/
+│   │   ├─ main.py            # 읽기 전용 FastAPI 앱 (uvicorn backend.api.main:app)
+│   │   └─ queries.py         # DB 조회(file:…?mode=ro, SELECT 만)
 │   ├─ service/
 │   │   └─ display.py         # 표시 규칙(D-Day·그룹·정렬·배지) 순수 함수, DB 접근 없음
 │   ├─ crawler/
@@ -279,6 +282,28 @@ DB 접근 없음. `today` 는 인자로 주입하고 기본값은 Asia/Seoul 오
   `old → new` 문자열을 담는다(period_changed 는 `open 2026-09-20 ~ - → dated 2026-09-20 ~ 2026-10-20` 처럼 읽기 쉬운 문자열).
 - **재등록**(reactivated): window 이내 최근 1건, detail 없음. **deactivated 는 활성 행의 배지로 쓰지 않는다.**
 - window 판정은 is_new 와 같다: 날짜(서울) 차이가 window_days 이내(<=). 정확히 7일 차이는 포함, 8일 차이는 제외.
+
+### 읽기 전용 API (`backend/api/`, FastAPI)
+실행(프로젝트 루트, conda 환경 web_crawling): `uvicorn backend.api.main:app --reload` → http://127.0.0.1:8000 (문서: `/docs`).
+- **DB 는 절대 쓰지 않는다**: 요청마다 `file:…?mode=ro` 로 열고 닫는다. 쓰기 엔드포인트가 없고(GET 만) `init_db`·마이그레이션을 호출하지 않는다.
+  경로는 환경변수 `YOUTH_DB_PATH`, 기본값 `backend/data/youth.db`. DB 파일이 없거나(DB 를 만들지 않는다) 열 수 없거나 스키마가 맞지 않으면 **503**.
+- 표시 계산은 `backend/service/display.py`(`compute_display`, `sort_programs`, `badges`)를 그대로 쓴다(규칙 중복 구현 금지).
+- `today` 는 의존성 `get_today` 로 주입한다(테스트에서 `app.dependency_overrides[get_today]` 로 고정). 기본값은 Asia/Seoul 오늘.
+- CORS: `http://localhost:5173`, `http://127.0.0.1:5173` 만 허용(GET).
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| GET | `/api/health` | `{status, db_available}`. DB 를 열거나 만들지 않는다 |
+| GET | `/api/meta` | today, active_count, expired_active_count, tab_counts(deadline/always/etc/all), last_collected_at(활성 행의 last_seen_at 최댓값 — 목록 수집 때만 갱신되는 값. updated_at·detail_fetched_at 은 쓰지 않아 재분류 시각이 섞이지 않음. 없으면 null), events_7d(종류별), new_7d, baseline_date |
+| GET | `/api/programs` | 활성 공고 목록. 쿼리: `tab`=deadline(기본: 모집중+모집예정+마감일 미정)\|always\|etc(상시-기타)\|all(unknown 포함, expired 제외), `q`(제목·기관·분야 부분일치), `category`(분야 정확히), `limit`(기본 50, 1~200, 초과는 422), `offset`. 응답 `{items, total(필터 후), counts{deadline, always, etc}}` |
+| GET | `/api/programs/{source_id}` | 상세(목록 필드 + summary, target, schedule_text, is_active, history 최신순). 없으면 404. 비활성 행도 200 이며 `is_active=false`, display_status `비활성`, d_day 없음 |
+| GET | `/api/changes?days=7&type=` | 최근 변경 목록(시각 내림차순). 이벤트 + 파생 NEW(`type=new`, detected_at=first_seen_at). `days` 1~90, `type`=new\|extended\|shortened\|period_changed\|status_changed\|deactivated\|reactivated. 응답 `{days, total, counts(type 필터와 무관), items}` |
+
+- 목록 item 필드: source_id, title, category, organization, display_status, group, d_day, d_day_label, source_status, period_text, start_date,
+  end_date, apply_url, source_url, first_seen_at, badges. 정렬은 `sort_programs` 결과를 쓰고 **그 뒤에** 페이지네이션한다.
+- `counts`(programs) 는 q·category 를 적용한 뒤의 탭별 건수(탭 선택과 무관)이고, 필터와 무관한 전체 건수는 `/api/meta` 의 `tab_counts`.
+- badges 는 최근 7일 이벤트를 **쿼리 한 번**으로 모아 계산한다(N+1 금지). `/api/changes` 의 NEW 는 활성 행만, 이벤트는 비활성 행 것도 포함한다
+  (deactivated 의 `reason` = expired/early). 일수·window 경계는 `is_new`/`badges` 와 같다(정확히 N일 전은 포함, N+1일 전은 제외).
 
 ## 6. 테스트와 확인
 - tests 는 samples/ 의 HTML을 파일로 읽어 파싱 함수만 검증한다(네트워크 접속 없이). pytest 로 실행.

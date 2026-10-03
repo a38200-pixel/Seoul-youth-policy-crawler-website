@@ -48,6 +48,25 @@ python -m backend.crawler.crawl --no-detail
 pytest
 ```
 
+## API 서버 (읽기 전용)
+
+```powershell
+uvicorn backend.api.main:app --reload
+```
+
+- http://127.0.0.1:8000 에서 열리고 `/docs` 에서 확인할 수 있습니다. DB 에는 **쓰지 않으며**(요청마다 읽기 전용으로 엽니다) 쓰기 엔드포인트가 없습니다.
+- DB 경로는 환경변수 `YOUTH_DB_PATH` (기본 `backend/data/youth.db`). DB 파일이 없으면 만들지 않고 503 을 돌려줍니다.
+  예: `$env:YOUTH_DB_PATH = "C:\path\to\copy.db"; uvicorn backend.api.main:app --reload`
+- CORS 는 `http://localhost:5173`, `http://127.0.0.1:5173` 만 허용합니다.
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| GET | `/api/health` | 상태 확인 (`status`, `db_available`) |
+| GET | `/api/meta` | 오늘 날짜, 활성 건수, 탭별 건수, 마지막 수집 시각(활성 행의 `last_seen_at` 최댓값, 재분류는 반영 안 됨), 최근 7일 변경 종류별 건수, 기준일 |
+| GET | `/api/programs` | 활성 공고 목록. `tab`(deadline 기본 / always / etc / all), `q`, `category`, `limit`(기본 50, 최대 200), `offset` |
+| GET | `/api/programs/{source_id}` | 공고 상세 + 변경 이력(최신순). 없으면 404, 비활성 행도 200 |
+| GET | `/api/changes?days=7&type=` | 최근 변경 목록(NEW 포함, 시각 내림차순) |
+
 ## 탐색 노트북
 
 ```powershell
@@ -57,7 +76,9 @@ jupyter notebook notebooks/01_explore_crawling.ipynb
 ## 폴더 구조
 
 ```
-backend/app/       FastAPI (예정)
+backend/api/       읽기 전용 FastAPI (main.py, queries.py)
+backend/service/   표시 규칙(D-Day·그룹·정렬·배지) 순수 함수
+backend/app/       (사용 안 함)
 backend/crawler/   Selenium 크롤러, 파서, 정규화, DB
 backend/data/      youth.db 생성 위치
 backend/logs/      실행 로그
