@@ -229,19 +229,19 @@ def plan_daily_targets(universe, rows_by_id, today, list_statuses=None):
     for sid in universe:
         row = rows_by_id.get(sid)
         if row is None or row["detail_fetched_at"] is None:
-            reasons[sid] = "new"
+            reasons[sid] = "new"   # (a) 신규
         elif row["period_type"] in DAILY_REGULAR_TYPES:
-            reasons[sid] = "regular"
+            reasons[sid] = "regular"   # (b) 상시 외 매일
         elif (list_statuses is not None and row["source_status"] is not None
               and list_statuses.get(sid) is not None and list_statuses[sid] != row["source_status"]):
-            reasons[sid] = "status"
+            reasons[sid] = "status"   # (c) 상태 변경
         elif row["period_type"] == "always":
             fetched = _seoul_datetime(row["detail_fetched_at"])
             if (today - fetched.date()).days >= DAILY_ALWAYS_REFRESH_DAYS:
                 always_candidates.append((fetched, sid))
     always_candidates.sort()   # 오래된 순(같으면 source_id 순)
     for _, sid in always_candidates[:DAILY_ALWAYS_CAP]:
-        reasons[sid] = "always"
+        reasons[sid] = "always"   # (d) 상시 갱신(오래된 순, 최대 200건)
     return reasons, len(always_candidates)
 
 
