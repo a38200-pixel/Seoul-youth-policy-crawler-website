@@ -39,7 +39,7 @@ youth-dday/ (저장소 루트)
 │   │   └─ crawl.py           # 실행 진입점: python -m backend.crawler.crawl
 │   ├─ data/                  # youth.db 생성 위치
 │   └─ logs/                  # 실행 로그
-├─ frontend/                  # React 자리 (README만)
+├─ frontend/                  # React 화면 (Vite + TypeScript, Vitest). 규칙은 아래 "프런트 규칙"
 └─ tests/
     ├─ test_list_parser.py    # samples/list_sample.html 로 테스트
     ├─ test_detail_parser.py
@@ -313,6 +313,22 @@ DB 접근 없음. `today` 는 인자로 주입하고 기본값은 Asia/Seoul 오
 - `category` 필터는 **정확 일치**이고 category 컬럼은 한 값이다. `/api/meta` 의 `categories[].name` 으로 거르면 `tab=all` 의 total 이 count 와 같다.
 - badges 는 최근 7일 이벤트를 **쿼리 한 번**으로 모아 계산한다(N+1 금지). `/api/changes` 의 NEW 는 활성 행만, 이벤트는 비활성 행 것도 포함한다
   (deactivated 의 `reason` = expired/early). 일수·window 경계는 `is_new`/`badges` 와 같다(정확히 N일 전은 포함, N+1일 전은 제외).
+
+### 프런트 규칙 (`frontend/`, React)
+Vite + React + TypeScript. 실행: 백엔드를 띄운 뒤 `frontend/` 에서 `npm install` → `npm run dev` (http://localhost:5173). 테스트는 `npm test`(Vitest), 빌드는 `npm run build`.
+구조: `src/api`(클라이언트·응답 타입·요청 훅), `src/components`, `src/lib`(날짜·달력 격자·점 강도·이벤트 문구 같은 순수 함수).
+- **D-Day 는 서버가 준 값만 쓴다**: `d_day_label`·`today` 를 그대로 쓰고, 브라우저 시계(`new Date()` 등)로 D-Day 를 계산하지 않는다.
+  요일은 날짜 문자열에서 UTC 기준으로 계산해, 사용자 PC 의 시간대 때문에 하루가 어긋나지 않게 한다.
+- **모든 수치·날짜·상태는 API 값만 쓴다.** 하드코딩된 샘플 데이터는 금지(테스트의 목킹 데이터만 예외).
+  배지(`badges`)·그룹(`group`)·건수(`counts`·`group_counts`·`categories`)도 서버 값을 그대로 쓰고 프런트에서 새 규칙을 만들지 않는다.
+- **추가 라이브러리 금지**: 라우터, 상태관리, CSS 프레임워크, 차트 라이브러리는 쓰지 않는다. 허용되는 추가 의존성은 테스트용 Vitest(+ jsdom, @testing-library/react)뿐이다.
+  스타일은 CSS 파일 + CSS 변수(`src/styles.css`).
+- **달력 점 단계 기준은 상수 한 곳**: `src/lib/calendar.ts` 의 `INTENSITY_MID_FROM`(6)·`INTENSITY_HIGH_FROM`(16). 1~5건 / 6~15건 / 16건 이상.
+  색만으로 의미를 전달하지 않도록 날짜 버튼의 `aria-label`·`title` 에도 건수를 넣는다.
+- 탭·필터가 바뀌면 진행 중인 요청은 `AbortController` 로 취소해 이전 응답이 새 응답을 덮어쓰지 않게 한다.
+- **백엔드는 읽기 전용**: 프런트는 GET 만 쓴다. 개발 서버는 `/api` 를 `http://127.0.0.1:8000` 으로 프록시하고, 다른 포트의 백엔드는 환경변수 `API_PROXY_TARGET` 으로 바꾼다.
+- **개발 확인은 개발 복사본 DB 로만 한다**: 백엔드를 `YOUTH_DB_PATH`(복사본)로 띄우고 확인하며, 실제 DB 파일은 열지 않는다.
+  이미 떠 있는 서버(8000번)가 있으면 건드리지 말고 다른 포트(예: 8001)에 복사본 백엔드를 따로 띄운다.
 
 ## 6. 테스트와 확인
 - tests 는 samples/ 의 HTML을 파일로 읽어 파싱 함수만 검증한다(네트워크 접속 없이). pytest 로 실행.

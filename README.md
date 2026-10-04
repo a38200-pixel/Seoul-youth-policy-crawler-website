@@ -3,14 +3,15 @@
 청년몽땅정보통(https://youth.seoul.go.kr)의 "청년지원정보"를 매일 수집해 마감 D-Day, 신규/변경 공고, 마감 캘린더를 보여주는 웹서비스.
 
 - 스택: Python + Selenium(크롤러) / SQLite / FastAPI / React (AI·LLM 미사용)
-- 현재 단계: 크롤러 + SQLite 저장 + 읽기 전용 FastAPI API 구현 완료, React 화면은 예정(`frontend/` 는 자리만)
+- 현재 단계: 크롤러 + SQLite 저장 + 읽기 전용 FastAPI API + React 화면 구현 완료 (캘린더 `.ics` 내보내기만 미구현)
 
 ## 주요 기능
 
 - **D-Day 정렬**: 신청기간의 마감일 기준으로 모집중(마감 임박 순) → 모집예정(시작 D-n) → 마감일 미정 → 상시 → 확인 필요 순으로 정렬. 날짜만 쓰고 시각은 무시한다.
 - **변경 감지**: 신규(NEW), 마감 연장·단축, 신청기간 변경, 모집상태 변경, 목록에서 내려감(마감 만료 / 마감 전 내려감), 재등록을 `program_changes` 에 기록하고 배지로 보여준다.
-- **읽기 전용 API**: FastAPI 로 목록·상세·변경 목록·메타 정보를 제공한다. DB 에는 쓰지 않는다.
-- 기술 스택: Python, Selenium(크롤러), SQLite, FastAPI. 프론트엔드(React)는 아직 없다. 개발 일지는 [docs/devlog.md](docs/devlog.md).
+- **읽기 전용 API**: FastAPI 로 목록·상세·변경 목록·달력·메타 정보를 제공한다. DB 에는 쓰지 않는다.
+- **화면(React)**: 마감 임박·상시·기타·최근 변경 탭, 월별 마감 달력(날짜를 누르면 그날 마감 목록), 최근 7일 변경 요약, 공고 상세 패널.
+- 기술 스택: Python, Selenium(크롤러), SQLite, FastAPI, React(Vite + TypeScript). 개발 일지는 [docs/devlog.md](docs/devlog.md).
 
 ## 설치 (Windows, PowerShell)
 
@@ -109,7 +110,9 @@ python -m backend.crawler.crawl --no-detail
 pytest
 ```
 
-2026-10-03 에 `pytest -v` 를 실행한 결과: 363 passed, 1 warning (경고는 starlette 의 `httpx2` 설치 안내).
+2026-10-03 에 실행한 결과:
+- 백엔드 `pytest -q`: 427 passed, 1 warning (경고는 starlette 의 `httpx2` 설치 안내)
+- 프런트엔드 `npm test`(`frontend/`): 테스트 파일 4개, 46 passed
 
 ## API 서버 (읽기 전용)
 
@@ -131,6 +134,37 @@ uvicorn backend.api.main:app --reload
 | GET | `/api/programs/{source_id}` | 공고 상세 + 변경 이력(최신순). 없으면 404, 비활성 행도 200 |
 | GET | `/api/changes?days=7&type=` | 최근 변경 목록(NEW 포함, 시각 내림차순). 항목마다 `end_date`·`period_type`(공고 행이 없으면 null) |
 
+## 프런트엔드 (React)
+
+백엔드(읽기 전용 API)의 값만 보여 주는 화면입니다. Vite + React + TypeScript 로 만들었고, 추가 라이브러리는 테스트용 Vitest(+ jsdom, @testing-library/react)뿐입니다.
+
+터미널 2개로 실행합니다.
+
+```powershell
+# 터미널 1: 백엔드 (프로젝트 루트)
+uvicorn backend.api.main:app --reload
+
+# 터미널 2: 프런트엔드
+cd frontend
+npm install
+npm run dev
+```
+
+- 접속 주소: http://localhost:5173
+- 개발 서버는 `/api` 요청을 `http://127.0.0.1:8000` 으로 프록시합니다(개발 중 CORS 에 의존하지 않음). 다른 포트의 백엔드를 쓰려면 환경변수 `API_PROXY_TARGET` 으로 바꿉니다.
+  예: `$env:API_PROXY_TARGET = "http://127.0.0.1:8001"; npm run dev`
+- `npm test` 는 Vitest 를, `npm run build` 는 타입 검사와 프로덕션 빌드(`frontend/dist/`)를 실행합니다. 자세한 내용은 [frontend/README.md](frontend/README.md).
+
+### 화면 구성
+
+- **헤더**: 로고, 검색(입력을 멈춘 뒤 300ms 후 `q` 로 요청), 서버 오늘 날짜와 마지막 수집 시각.
+- **탭 4개**: 마감 임박 / 상시 / 기타 / 최근 변경(각 건수 표시)과 **분야 칩**(`/api/meta` 의 `categories`).
+- **마감 임박 탭**: 오늘 마감(0건이면 섹션 숨김, 4건을 넘으면 펼치기) / 곧 마감(12건씩 더 보기) / 마감일 미정(0건이면 숨김).
+- **월 달력**(마감 임박 탭에서만): 날짜를 누르면 그날 마감 목록으로 바뀌고, 다시 누르면 해제됩니다. 점은 마감 건수에 따라 3단계(1~5건 / 6~15건 / 16건 이상)이고, 오늘 이전 날짜는 누를 수 없습니다.
+- **최근 7일 변경 요약** 카드와 **최근 변경 탭**(유형 칩, "전체 N건 중 M건 표시").
+- **상세 패널**: 변경 이력과 신청 페이지 링크를 보여 줍니다. Esc·바깥 클릭·닫기 버튼으로 닫습니다.
+- "내 캘린더에 마감일 추가 (.ics)" 버튼은 비활성입니다(미구현).
+
 ## 탐색 노트북
 
 ```powershell
@@ -146,36 +180,51 @@ backend/app/       (사용 안 함)
 backend/crawler/   Selenium 크롤러, 파서, 정규화, DB
 backend/data/      youth.db 생성 위치
 backend/logs/      실행 로그
-frontend/          React (예정)
+frontend/          React 화면 (Vite + TypeScript, Vitest)
 notebooks/         탐색용 노트북
 scripts/           run_daily.bat (수동 실행용)
-docs/              개발 일지(devlog.md)
+docs/              개발 일지(devlog.md), 화면 스크린샷
 tests/             pytest
 ```
 
 ## 알려진 한계
 
 - 공고 변경은 하루 1회(07:00) 수집 시점에 반영됩니다. 사이트 구조(셀렉터)가 바뀌면 수집이 깨질 수 있습니다.
-- 변경 감지는 첫 실데이터 검증(2026-10-02 → 10-03, 표본 1일)에서 연장·단축 이벤트가 한 건도 관찰되지 않아, 연장·단축 판정은 실제 사례로 확인하지 못했습니다.
+- 변경 감지는 첫 실데이터 검증(2026-10-02 → 10-03, 표본 1일)에서 연장·단축 이벤트가 한 건도 관찰되지 않았습니다. 연장·단축·기간 변경·다시 게시됨 이벤트는 실데이터로 확인하지 못했고 단위 테스트로만 확인했습니다.
 - 기준일(2026-10-01)에 처음 적재한 공고는 NEW 로 표시하지 않습니다. 재분류(`--reclassify`)는 변경 이벤트를 만들지 않습니다.
-- 모집상태가 '모집예정'인 `end_only` 공고는 시작일을 몰라 '시작 D-n' 을 만들 수 없습니다(화면 표시 방식은 UI 단계에서 결정).
+- 모집상태가 '모집예정'인 `end_only` 공고는 시작일을 몰라 '시작 D-n' 을 만들 수 없습니다(화면은 서버의 표시 규칙대로 마감 D-Day 로 보여 주고, 사이트 상태는 상세 패널의 '사이트 상태'에 그대로 표시합니다).
 - API 에는 인증이 없고 읽기 전용입니다. CORS 는 `localhost:5173`, `127.0.0.1:5173` 만 허용합니다.
 - 자동 수집은 PC 가 켜져 있고 로그인된 상태여야 하며, 꺼져 있던 날은 수집 공백이 생길 수 있습니다.
 - 다음은 **가설**이며 아직 검증하지 않았습니다(근거와 검증 기준은 [docs/devlog.md](docs/devlog.md) 3번 항목).
   - 사이트가 상시 게시글을 등록 약 1년 뒤에 숨기는 것으로 보임(활성 상시의 최소 ID 64782).
   - 신청기간이 불완전한 글(시작일만 또는 종료일만 있는 글)은 1~2일 안에 사라지는 경향(9건 중 9건, 표본 작음).
-- React 화면과 캘린더(.ics) 내보내기는 아직 없습니다.
+- 캘린더(.ics) 내보내기는 구현하지 않았습니다(화면의 버튼은 비활성).
+- `/api/changes` 는 서버 페이지네이션이 없어 화면에서 50건씩 나눠 보여 줍니다. "오늘 마감" 펼치기는 한 번에 최대 200건(서버 `limit` 상한)입니다.
+- 프런트 린트(oxlint) 경고 2건(`frontend/src/api/hooks.ts`)이 남아 있습니다.
+- 모바일 실기기, 스크린리더 실사용, 글자 대비의 도구 측정은 하지 않았습니다.
+- '마감일 미정' 섹션은 개발용 복사본에 해당 공고가 0건이라 실데이터로 화면을 확인하지 못했습니다(모의 데이터 테스트로만 확인).
+- '확인 필요'(`unknown`) 공고는 어느 탭에도 나오지 않습니다(화면이 `tab=all` 을 쓰지 않음). 개발용 복사본에서는 0건이었습니다.
 
 ## AI 도구 사용 고지
 
 이 서비스의 기능에는 AI(LLM)를 사용하지 않습니다. 개발 과정에서는 코드 작성 도구로 Claude Code 를 사용했습니다. 설계와 검수는 개발자가 했고, AI 는 구현을 도왔습니다.
 
+UI 시안(카드형·리스트+상세형·타임라인+캘린더형 3종과 이를 합친 시안)은 AI(Claude)가 만든 렌더링 시안을 개발자가 비교·선택했고, React 구현은 Claude Code 로 했습니다. 설계 결정과 검수는 개발자가 했습니다.
+
 ## 스크린샷
 
-`docs/images/` 폴더는 아직 없고 아래 파일도 없습니다. 파일을 넣은 뒤 `![설명](docs/images/파일명)` 링크를 추가하세요.
+화면 스크린샷 2장은 현재 `docs/` 바로 아래에 있습니다(`docs/images/` 폴더는 아직 없음). 나머지는 파일이 없고, 파일을 넣은 뒤 `![설명](경로)` 링크를 추가하세요.
+
+![마감 임박 탭 기본 화면](docs/full_screen.png)
+
+![달력에서 날짜를 선택한 화면](docs/choose_date.png)
+
+위 두 캡처가 개발용 복사본 DB 기준인지 실제 DB 기준인지: `TODO(확인 필요)`
 
 | 파일명 | 내용 | 상태 |
 |---|---|---|
+| `full_screen.png` | 마감 임박 탭 기본 화면 | 있음(`docs/full_screen.png`). DB 기준: `TODO(확인 필요)` |
+| `choose_date.png` | 달력에서 10월 6일을 선택한 화면 | 있음(`docs/choose_date.png`). DB 기준: `TODO(확인 필요)` |
 | `api-docs.png` | API 문서(`/docs`) 화면 | `TODO(확인 필요)` 파일 없음 |
 | `api-changes.png` | `/api/changes` 응답 | `TODO(확인 필요)` 파일 없음 |
 | `pytest.png` | pytest 실행 결과 | `TODO(확인 필요)` 파일 없음 |
