@@ -148,6 +148,19 @@ def deadline_on(row, display, day=None):
     return display["group"] in CALENDAR_GROUPS and end is not None and (day is None or end == _date(day))
 
 
+def calendar_exportable(row, display, today=None):
+    """캘린더(구글 캘린더 링크)에 추가할 수 있는 공고인가.
+
+    활성이고, 그룹이 recruiting·upcoming 이고, end_date 가 있고, end_date 가 오늘(서울) 이후(오늘 포함)일 때만 True.
+    상시·마감일 미정·확인 필요·만료·비활성은 False. is_active 가 행에 없으면(순수 함수 테스트용 dict) 활성으로 본다.
+    """
+    is_active = _get(row, "is_active")
+    if is_active is not None and not is_active:
+        return False
+    end = end_date_of(row)
+    return display["group"] in CALENDAR_GROUPS and end is not None and end >= _today(today)
+
+
 # ---------------------------------------------------------------- 배지
 BADGE_LABELS = {
     "new": "NEW", "extended": "연장", "shortened": "단축", "period_changed": "기간 변경",

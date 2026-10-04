@@ -300,6 +300,10 @@ DB 접근 없음. `today` 는 인자로 주입하고 기본값은 Asia/Seoul 오
 | GET | `/api/programs/{source_id}` | 상세(목록 필드 + summary, target, schedule_text, is_active, history 최신순). 없으면 404. 비활성 행도 200 이며 `is_active=false`, display_status `비활성`, d_day 없음 |
 | GET | `/api/changes?days=7&type=` | 최근 변경 목록(시각 내림차순). 이벤트 + 파생 NEW(`type=new`, detected_at=first_seen_at). `days` 1~90, `type`=new\|extended\|shortened\|period_changed\|status_changed\|deactivated\|reactivated. 응답 `{days, total, counts(type 필터와 무관), items}`. 항목 `{id, type, source_id, title, detected_at, old_value, new_value, reason, end_date, period_type}` — end_date(YYYY-MM-DD)·period_type 은 programs 를 source_id 로 붙여 가져오고 행이 없으면 둘 다 null |
 
+- **구글 캘린더에 추가할 수 있는 공고(`calendar_exportable`)**: 목록 item 과 상세 응답에 boolean `calendar_exportable` 이 있다.
+  정의(`display.calendar_exportable`): **활성이고, group 이 recruiting 또는 upcoming 이고, end_date 가 있고, end_date 가 오늘(서울) 이후(오늘 포함)**.
+  상시·마감일 미정·확인 필요·만료·비활성, 그리고 시작일만 있는 모집예정(end_date 없음)은 false 다. 프런트가 "구글 캘린더에 추가" 버튼을 보일지 정하는 데 쓴다.
+  캘린더 파일 내보내기는 제공하지 않는다(알림·구독 URL·동기화도 하지 않는다).
 - 목록 item 필드: source_id, title, category, organization, display_status, group, d_day, d_day_label, source_status, period_text, start_date,
   end_date, apply_url, source_url, first_seen_at, badges. 정렬은 `sort_programs` 결과를 쓰고 **그 뒤에** 페이지네이션한다.
 - **날짜 필터·달력(`/api/programs?date=`, `/api/calendar`)**: 둘 다 `display.deadline_on`(compute_display 의 group 이 recruiting·upcoming 이고 end_date 가 있는 행) 하나를
@@ -326,6 +330,10 @@ Vite + React + TypeScript. 실행: 백엔드를 띄운 뒤 `frontend/` 에서 `n
 - **달력 점 단계 기준은 상수 한 곳**: `src/lib/calendar.ts` 의 `INTENSITY_MID_FROM`(6)·`INTENSITY_HIGH_FROM`(16). 1~5건 / 6~15건 / 16건 이상.
   색만으로 의미를 전달하지 않도록 날짜 버튼의 `aria-label`·`title` 에도 건수를 넣는다.
 - 탭·필터가 바뀌면 진행 중인 요청은 `AbortController` 로 취소해 이전 응답이 새 응답을 덮어쓰지 않게 한다.
+- **"구글 캘린더에 추가" 버튼은 서버 값만 따른다**: 상세 패널의 버튼은 서버가 준 `calendar_exportable` 이 true 이고 `end_date` 가 있을 때만 보인다.
+  링크의 `dates` 는 마감일/마감일+1일(`YYYYMMDD/YYYYMMDD`)이며, +1일은 문자열의 연·월·일을 UTC 날짜로 계산할 뿐 현재 시각을 읽지 않는다(`src/lib/calendarExport.ts`).
+  `details` 는 기관과 상세 링크만 담고 300자로 자르며, 쿼리는 `URLSearchParams` 로 인코딩한다. 버튼 가까이에 "추가한 시점의 마감일 기준이며 이후 변경은 자동 반영되지 않습니다"를 표시한다.
+  파일 내보내기(다운로드 버튼, 달력 아래 목록 내보내기)는 없다.
 - **백엔드는 읽기 전용**: 프런트는 GET 만 쓴다. 개발 서버는 `/api` 를 `http://127.0.0.1:8000` 으로 프록시하고, 다른 포트의 백엔드는 환경변수 `API_PROXY_TARGET` 으로 바꾼다.
 - **개발 확인은 개발 복사본 DB 로만 한다**: 백엔드를 `YOUTH_DB_PATH`(복사본)로 띄우고 확인하며, 실제 DB 파일은 열지 않는다.
   이미 떠 있는 서버(8000번)가 있으면 건드리지 말고 다른 포트(예: 8001)에 복사본 백엔드를 따로 띄운다.

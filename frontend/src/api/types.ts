@@ -24,6 +24,8 @@ export type Program = {
   source_url: string | null
   first_seen_at: string | null
   badges: Badge[]
+  /** 서버가 정한 값: 활성이고 모집중·모집예정이며 마감일이 오늘(서울) 이후인 공고만 true. 캘린더 내보내기 버튼의 표시 조건이다. */
+  calendar_exportable: boolean
 }
 
 export type TabCounts = { deadline: number; always: number; etc: number }

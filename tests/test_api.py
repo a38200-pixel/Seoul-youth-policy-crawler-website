@@ -25,7 +25,8 @@ D2 = datetime(2026, 10, 2, 9, 0, tzinfo=KST)
 D2L = datetime(2026, 10, 2, 10, 0, tzinfo=KST)
 
 ITEM_FIELDS = {"source_id", "title", "category", "organization", "display_status", "group", "d_day", "d_day_label",
-               "source_status", "period_text", "start_date", "end_date", "apply_url", "source_url", "first_seen_at", "badges"}
+               "source_status", "period_text", "start_date", "end_date", "apply_url", "source_url", "first_seen_at", "badges",
+               "calendar_exportable"}
 EXPECTED_DEADLINE = ["102", "103", "130", "101", "122", "131", "104", "106"]
 
 
@@ -736,6 +737,20 @@ def test_group_total_equals_group_counts_without_filters(fixture_name, request):
     for g in GROUPS:
         r = client.get("/api/programs", params={"tab": "all", "group": g, "limit": 200})
         assert r.json()["total"] == gc[g], g
+
+
+# ---------------------------------------------------------------- calendar_exportable (구글 캘린더 추가 버튼의 표시 조건)
+EXPORTABLE_IDS = {"101", "102", "103", "104", "122", "130"}                       # 활성·모집중/모집예정·마감일 있음·오늘 이후
+
+
+def test_calendar_exportable_flag_in_list_and_detail(client):
+    items = client.get("/api/programs?tab=all&limit=200").json()["items"]
+    assert {i["source_id"] for i in items if i["calendar_exportable"] is True} == EXPORTABLE_IDS
+    assert all(isinstance(i["calendar_exportable"], bool) for i in items)
+    for sid in ("101", "102", "104"):                                           # 102 는 오늘 마감(포함), 104 는 모집예정
+        assert client.get(f"/api/programs/{sid}").json()["calendar_exportable"] is True
+    for sid in ("105", "106", "107", "109", "110", "120", "121", "131"):
+        assert client.get(f"/api/programs/{sid}").json()["calendar_exportable"] is False, sid
 
 
 # ---------------------------------------------------------------- 읽기 전용 보장

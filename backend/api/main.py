@@ -18,7 +18,8 @@ from backend.api import queries
 from backend.crawler.db import BASELINE_DATE, is_new
 from backend.crawler.normalizer import today_kst
 from backend.service import display as rules
-from backend.service.display import badges, compute_display, deadline_on, end_date_of, sort_programs
+from backend.service.display import (badges, calendar_exportable, compute_display, deadline_on, end_date_of,
+                                     sort_programs)
 
 RECENT_DAYS = 7   # 배지·meta 의 '최근' 기준(일)
 CORS_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -63,7 +64,7 @@ def database_error_handler(request, exc):
 
 
 # ---------------------------------------------------------------- 응답 만들기
-def _item(row, display, badge_list):
+def _item(row, display, badge_list, today):
     return {
         "source_id": row["source_id"],
         "title": row["title"],
@@ -81,6 +82,7 @@ def _item(row, display, badge_list):
         "source_url": row["source_url"],
         "first_seen_at": row["first_seen_at"],
         "badges": badge_list,
+        "calendar_exportable": calendar_exportable(row, display, today),
     }
 
 
@@ -123,6 +125,17 @@ def _end_date_text(value):
     return d.isoformat() if d else None
 
 
+def _filtered(conn, today, tab, q, category, date, group):
+    """/api/programs 의 필터. (q·category 적용 후 전체 pairs, 탭·date·group 적용 후 selected)를 돌려준다."""
+    pairs = [(r, d) for r, d in sort_programs(queries.active_rows(conn), today) if _matches(r, q, category)]
+    selected = pairs if tab == "all" else [p for p in pairs if p[1]["group"] in TAB_GROUPS[tab]]
+    if date is not None:
+        selected = [p for p in selected if deadline_on(p[0], p[1], date)]
+    if group is not None:
+        selected = [p for p in selected if p[1]["group"] == group]
+    return pairs, selected
+
+
 # ---------------------------------------------------------------- 엔드포인트
 @app.get("/api/health")
 def health():
@@ -149,15 +162,11 @@ def list_programs(
     date 는 end_date 가 그 날짜인 공고만(만료 공고는 sort_programs 가 이미 뺐고, 마감일 없는 공고는 어떤 날짜에도 걸리지 않는다).
     group 은 표시 규칙(compute_display)이 계산한 group 으로 거른다.
     """
-    pairs = [(r, d) for r, d in sort_programs(queries.active_rows(conn), today) if _matches(r, q, category)]
-    selected = pairs if tab == "all" else [p for p in pairs if p[1]["group"] in TAB_GROUPS[tab]]
-    if date is not None:
-        selected = [p for p in selected if deadline_on(p[0], p[1], date)]
-    if group is not None:
-        selected = [p for p in selected if p[1]["group"] == group]
+    pairs, selected = _filtered(conn, today, tab, q, category, date, group)
     page = selected[offset: offset + limit]
     events = queries.events_by_source(queries.recent_events(conn, today, RECENT_DAYS))   # 쿼리 한 번(N+1 아님)
-    items = [_item(r, d, badges(r["first_seen_at"], events.get(r["source_id"], []), today, RECENT_DAYS)) for r, d in page]
+    items = [_item(r, d, badges(r["first_seen_at"], events.get(r["source_id"], []), today, RECENT_DAYS), today)
+             for r, d in page]
     return {"items": items, "total": len(selected), "counts": _tab_counts(pairs), "group_counts": _group_counts(pairs)}
 
 
@@ -207,7 +216,7 @@ def get_program(source_id: str, conn=Depends(get_conn), today=Depends(get_today)
         display = {"display_status": "비활성", "group": "inactive", "d_day": None, "d_day_label": None,
                    "source_status": row["source_status"]}
         badge_list = []
-    item = _item(row, display, badge_list)
+    item = _item(row, display, badge_list, today)
     item.update(summary=row["summary"], target=row["target"], schedule_text=row["schedule_text"],
                 is_active=is_active, history=[_history_item(e) for e in history])
     return item

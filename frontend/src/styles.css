@@ -610,14 +610,10 @@ dd {
   font-weight: 500;
 }
 
-.ics-btn {
-  width: 100%;
-  margin-top: 12px;
-  height: 38px;
-  background: var(--bg);
-  border: 1px dashed var(--border);
-  border-radius: 10px;
+.export-note {
+  margin-top: 6px;
   color: var(--muted);
+  font-size: 12px;
 }
 
 /* ---------- 최근 변경 ---------- */
@@ -754,6 +750,24 @@ dd {
   border-radius: 999px;
   font-weight: 700;
   text-decoration: none;
+}
+
+/* 캘린더에 추가하는 보조 버튼(윤곽선) */
+.apply-btn.secondary {
+  margin-top: 0;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--text);
+}
+
+.cal-actions {
+  margin-top: 16px;
+}
+
+.cal-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .history li {

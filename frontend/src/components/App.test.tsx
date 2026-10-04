@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 
@@ -33,8 +33,10 @@ let requested: URL[] = []
 let metaStatus = 200
 let programsBody: ((url: URL) => unknown) | null = null
 let changesBody: (() => unknown) | null = null
+let detailBody: (() => unknown) | null = null
 
 function body(url: URL): unknown {
+  if (/^\/api\/programs\/[^/]+$/.test(url.pathname)) return detailBody ? detailBody() : {}
   switch (url.pathname) {
     case '/api/meta':
       return META
@@ -65,6 +67,7 @@ beforeEach(() => {
   metaStatus = 200
   programsBody = null
   changesBody = null
+  detailBody = null
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
@@ -253,6 +256,97 @@ describe('최근 변경 탭 문구', () => {
     expect(await screen.findByText('전체 60건 중 50건 표시')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '더 보기' }))
     expect(await screen.findByText('전체 60건 중 60건 표시')).toBeTruthy()
+  })
+})
+
+describe('구글 캘린더에 추가: 상세 패널 버튼', () => {
+  const NOTE = '추가한 시점의 마감일 기준이며 이후 변경은 자동 반영되지 않습니다'
+  const card = {
+    source_id: 'p1',
+    title: '오늘 마감 공고',
+    category: '금융',
+    organization: '서울시',
+    display_status: '모집중',
+    group: 'recruiting',
+    d_day: 0,
+    d_day_label: 'D-Day',
+    source_status: '모집중',
+    period_text: '2026-09-29 ~ 2026-10-03',
+    start_date: '2026-09-29',
+    end_date: '2026-10-03',
+    apply_url: null,
+    source_url: 'https://youth.seoul.go.kr/infoData/sprtInfo/view.do?sprtInfoId=1&key=2',
+    first_seen_at: null,
+    badges: [],
+    calendar_exportable: true,
+  }
+  const gc = { recruiting: 1, upcoming: 0, open: 0, always: 0, always_etc: 0, unknown: 0 }
+
+  function setup(detail: Record<string, unknown>) {
+    programsBody = (url) => {
+      const counts = { deadline: 1, always: 0, etc: 0 }
+      if (url.searchParams.get('date')) return { items: [card], total: 1, counts, group_counts: gc }
+      return { items: [], total: 1, counts, group_counts: gc }
+    }
+    detailBody = () => ({ ...card, summary: null, target: null, schedule_text: null, is_active: true, history: [], ...detail })
+  }
+
+  async function openDetail() {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /오늘 마감 공고/ }))
+    return within(await screen.findByRole('dialog', { name: '공고 상세' }))
+  }
+
+  it('calendar_exportable 이 true 이면 구글 캘린더 링크와 안내 한 줄만 보인다', async () => {
+    setup({})
+    const dialog = await openDetail()
+    const google = await dialog.findByRole('link', { name: '구글 캘린더에 추가' })
+    const href = google.getAttribute('href')!
+    expect(href.startsWith('https://calendar.google.com/calendar/render?')).toBe(true)
+    expect(google.getAttribute('target')).toBe('_blank')
+    expect(google.getAttribute('rel')).toBe('noopener noreferrer')
+    const p = new URL(href).searchParams
+    expect(p.get('text')).toBe('[마감] 오늘 마감 공고')
+    expect(p.get('dates')).toBe('20261003/20261004') // 마감일/마감일+1일
+    expect(p.get('details')).toContain('기관: 서울시')
+    expect(dialog.getByText(NOTE)).toBeTruthy()
+    expect(within(dialog.getByLabelText('캘린더에 추가')).getAllByRole('link')).toHaveLength(1) // 링크는 구글 버튼 하나뿐
+  })
+
+  it('연말 마감은 구글 링크의 dates 가 다음 해 1월 1일로 끝난다', async () => {
+    setup({ end_date: '2026-12-31' })
+    const dialog = await openDetail()
+    const href = (await dialog.findByRole('link', { name: '구글 캘린더에 추가' })).getAttribute('href')!
+    expect(new URL(href).searchParams.get('dates')).toBe('20261231/20270101')
+  })
+
+  it('calendar_exportable 이 false 이면 버튼과 안내가 모두 없다', async () => {
+    setup({ calendar_exportable: false })
+    const dialog = await openDetail()
+    await dialog.findByText('오늘 마감 공고')
+    expect(dialog.queryByRole('link', { name: '구글 캘린더에 추가' })).toBeNull()
+    expect(dialog.queryByText(NOTE)).toBeNull()
+  })
+
+  it('서버가 true 라도 마감일이 없으면 버튼을 보여 주지 않는다', async () => {
+    setup({ end_date: null })
+    const dialog = await openDetail()
+    await dialog.findByText('오늘 마감 공고')
+    expect(dialog.queryByRole('link', { name: '구글 캘린더에 추가' })).toBeNull()
+    expect(dialog.queryByText(NOTE)).toBeNull()
+  })
+})
+
+describe('달력 사이드바', () => {
+  it('달력 아래에 목록 내보내기 버튼·안내가 없고, 달력과 최근 변경 카드는 그대로 있다', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: '10월 6일, 26건 마감' })
+    expect(screen.queryByText(/내보내기/)).toBeNull()
+    expect(screen.queryByText(/앞 100건/)).toBeNull()
+    expect(screen.getByLabelText('마감 캘린더')).toBeTruthy()
+    expect(screen.getByLabelText('최근 7일 변경')).toBeTruthy()
+    // 파일 내보내기용 요청도 하지 않는다
+    expect(requested.some((u) => u.pathname.includes('export'))).toBe(false)
   })
 })
 

@@ -4,6 +4,7 @@ import { useRequest } from '../api/hooks'
 import type { ProgramDetail } from '../api/types'
 import { eventLabel, formatChange, hasEndDate } from '../lib/changes'
 import { formatShortDateTime } from '../lib/dates'
+import { DetailCalendarActions } from './CalendarActions'
 import { BadgeList, ErrorView, Loading } from './common'
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])'
@@ -48,6 +49,7 @@ function Body({ d }: { d: ProgramDetail }) {
           신청 페이지 열기
         </a>
       ) : null}
+      <DetailCalendarActions program={d} />
 
       <h3 className="panel-sub">변경 이력</h3>
       {d.history.length === 0 ? (

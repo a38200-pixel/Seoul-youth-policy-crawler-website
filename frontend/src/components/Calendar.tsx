@@ -123,9 +123,6 @@ export function Calendar({ today, month, onMonth, q, category, selected, selecte
         </p>
       ) : null}
 
-      <button type="button" className="ics-btn" disabled title="준비 중">
-        내 캘린더에 마감일 추가 (.ics)
-      </button>
     </section>
   )
 }
