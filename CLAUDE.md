@@ -105,7 +105,7 @@ youth-dday/ (저장소 루트)
 https://youth.seoul.go.kr/infoData/sprtInfo/list.do?key=2309130006&pageIndex=1&orderBy=regYmd+desc&recordCountPerPage=24
   &sc_rcritCurentSitu=상시&sc_rcritCurentSitu=모집중&sc_rcritCurentSitu=모집예정   (같은 키 3회 반복, 한글은 퍼센트 인코딩)
 ```
-- 최소 URL 이 전체 URL 과 같은 결과("전체 N건")를 주는지는 실행 검증 a) 에서 확인한다.
+- 최소 URL 이 전체 URL 과 같은 결과("전체 N건")를 주는지는 실행 검증 a 에서 확인한다.
 - 제외 공고: `selectors.EXCLUDE_IDS`(초기값 68721), `EXCLUDE_TITLE_KEYWORDS`(초기값 "게시요청 가이드"). 제외 건수와 제목은 로그에 남긴다.
 - "전체 N건" 은 `.tab-st4 .tab-btn li.active a` 선택자로 읽되, **`.tab-st4` 가 두 군데(정렬 탭, 건수 탭)에 있고**
   텍스트가 '전체 N건' 형태인 것만 쓴다. 정렬 탭의 active 링크는 "최신순"(문서 순서상 첫 번째), 건수 탭은 "전체 9254건"
