@@ -2,7 +2,7 @@
 
 청년몽땅정보통의 청년 지원 공고를 매일 수집해, **마감까지 며칠 남았는지(D-Day)**, 신규·변경·내려간 공고, 월별 마감 달력을 보여 주는 웹서비스입니다.
 
-- 발표 자료(PPT): [D-Day_portfolio_최종본.pptx](docs/D-Day_portfolio_%EC%B5%9C%EC%A2%85%EB%B3%B8.pptx) (링크를 누르면 파일 화면이 열립니다)
+- ppt 자료: [D-Day_portfolio_최종본.pptx](docs/D-Day_portfolio_%EC%B5%9C%EC%A2%85%EB%B3%B8.pptx)
 - 시연 영상: [웹크롤링 시연영상.mp4](docs/images/%EC%9B%B9%ED%81%AC%EB%A1%A4%EB%A7%81%20%EC%8B%9C%EC%97%B0%EC%98%81%EC%83%81.mp4) (GitHub 에서는 README 안에서 재생되지 않고, 링크를 누르면 파일 화면이 열립니다)
 
 ![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
@@ -32,9 +32,7 @@
 | 기술 스택 | 수집: Python 3.12 + Selenium / 저장: SQLite / 백엔드: FastAPI(읽기 전용 API) / 화면: React 19 + Vite 8 + TypeScript 6.0 / 테스트: pytest, Vitest |
 | 지원 범위 | Windows(개발·운영 환경), Chrome 브라우저 필요, **배포 없음(내 PC 에서만 실행)**.|
 
-AI(LLM)는 서비스 기능에 쓰지 않았습니다. 모든 판정(D-Day, 분류, 변경 감지)은 정해진 규칙으로 계산합니다.
 
-용어: **백엔드**는 화면이 요청하면 DB 에서 값을 읽어 돌려주는 부분이고, **API** 는 그 요청과 응답의 약속(주소와 형식)입니다. **D-Day** 는 마감일까지 남은 날짜입니다.
 
 ## 2. 서비스 구조
 
@@ -54,9 +52,6 @@ flowchart LR
     API -->|JSON| UI
 ```
 
-- **수집**은 사이트에 접속 대기열이 있어 일반 요청으로는 목록이 나오지 않아 Selenium 으로 Chrome 을 띄워 읽습니다.
-- **백엔드는 DB 에 쓰지 않습니다.** 요청마다 읽기 전용으로 열고, 쓰기 기능이 없습니다(GET 6개).
-- **화면은 표시만 합니다.** D-Day 같은 값은 백엔드가 계산해 주고, 화면은 그 값을 그대로 보여 줍니다.
 
 ## 3. 데이터 흐름
 
